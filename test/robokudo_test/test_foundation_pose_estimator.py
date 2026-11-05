@@ -20,7 +20,6 @@ from robokudo.annotators.object_observation import (  # noqa: E402
     ObjectObservation,
 )
 
-
 # %% Scene
 
 

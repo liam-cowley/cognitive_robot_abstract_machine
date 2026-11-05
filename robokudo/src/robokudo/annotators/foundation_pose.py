@@ -35,9 +35,9 @@ from robokudo.utils.o3d_helper import create_oriented_bounding_box, trimesh_to_o
 
 if TYPE_CHECKING:
     import numpy.typing as numpy_typing
+    from semantic_digital_twin.datastructures.camera_model import PinholeCameraModel
 
     from robokudo.annotators.foundation_pose_estimator import FoundationPoseEstimator
-    from semantic_digital_twin.datastructures.camera_model import PinholeCameraModel
 
 
 # %% Object class meshes

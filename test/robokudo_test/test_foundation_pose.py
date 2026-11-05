@@ -9,15 +9,6 @@ import pytest
 import trimesh
 from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix, Pose
 from py_trees.common import Status
-from semantic_digital_twin.datastructures.camera_model import PinholeCameraModel
-from semantic_digital_twin.datastructures.camera_resolution import CameraResolution
-from semantic_digital_twin.datastructures.field_of_view import FieldOfView
-from semantic_digital_twin.datastructures.prefixed_name import PrefixedName
-from semantic_digital_twin.robots.robot_parts import Camera
-from semantic_digital_twin.world import World
-from semantic_digital_twin.world_description.geometry import Color, Mesh, Scale
-from semantic_digital_twin.world_description.world_entity import Body
-
 from robokudo.annotators.exceptions import (
     DuplicateObjectClassMesh,
     ImageResolutionMismatch,
@@ -29,9 +20,9 @@ from robokudo.annotators.foundation_pose import (
     EstimateUnposedObjects,
     FoundationPoseAnnotator,
     ObjectClassMesh,
+    PosedObject,
     PoseUpdateMode,
     PoseVisualization,
-    PosedObject,
     PreviousFramePoses,
     TrackPosedObjects,
     VisualizationFrame,
@@ -46,7 +37,14 @@ from robokudo.types.cv import ColorToDepthRatio, Point2D, Rect
 from robokudo.types.scene import ObjectHypothesis
 from robokudo.utils.annotator_helper import transform_pose_from_camera_to_world
 from robokudo.utils.transform import get_transform_matrix_from_q
-
+from semantic_digital_twin.datastructures.camera_model import PinholeCameraModel
+from semantic_digital_twin.datastructures.camera_resolution import CameraResolution
+from semantic_digital_twin.datastructures.field_of_view import FieldOfView
+from semantic_digital_twin.datastructures.prefixed_name import PrefixedName
+from semantic_digital_twin.robots.robot_parts import Camera
+from semantic_digital_twin.world import World
+from semantic_digital_twin.world_description.geometry import Color, Mesh, Scale
+from semantic_digital_twin.world_description.world_entity import Body
 
 # %% Scripted pose estimation
 

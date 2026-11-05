@@ -31,7 +31,6 @@ from robokudo.annotators.object_observation import (
     ObjectObservation,
 )
 
-
 # %% Engine precision
 
 

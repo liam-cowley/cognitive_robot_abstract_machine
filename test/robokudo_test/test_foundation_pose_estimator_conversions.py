@@ -17,7 +17,6 @@ import pytest
 from krrood_spatial_math.spatial_types import Pose
 from typing_extensions import Any
 
-
 # %% Engines without a GPU
 
 
