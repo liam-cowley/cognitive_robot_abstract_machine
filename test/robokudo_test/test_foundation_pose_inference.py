@@ -1,3 +1,7 @@
+"""
+The FoundationPose inference on the GPU.
+"""
+
 from __future__ import annotations
 
 # %% Imports
@@ -13,10 +17,10 @@ pytest.importorskip(
     reason="needs the GPU build of the ROS package robokudo_foundation_pose_tensorrt",
 )
 
-from robokudo.annotators.foundation_pose_estimator import (  # noqa: E402
-    FoundationPoseEstimator,
+from robokudo.annotators.foundation_pose_inference import (  # noqa: E402
+    FoundationPoseInference,
 )
-from robokudo.annotators.object_observation import (  # noqa: E402
+from robokudo.annotators.object_pose_estimation.object_observation import (  # noqa: E402
     ObjectObservation,
 )
 
@@ -41,7 +45,7 @@ class PlateOnPlane:
     """
 
     object_observation: ObjectObservation = field(
-        default_factory=lambda: FoundationPoseEstimator.warm_up_object_observation
+        default_factory=lambda: FoundationPoseInference.warm_up_object_observation
     )
     """
     The plane with the plate's mask.
@@ -76,21 +80,21 @@ class PlateOnPlane:
 
 
 @pytest.fixture(scope="module")
-def estimator() -> FoundationPoseEstimator:
+def inference() -> FoundationPoseInference:
     """
-    The estimator with the default engines, shared by all tests of the module.
+    The inference with the default engines, shared by all tests of the module.
     """
-    return FoundationPoseEstimator()
+    return FoundationPoseInference()
 
 
 @pytest.fixture
-def plate(estimator: FoundationPoseEstimator, tmp_path: Path) -> PlateOnPlane:
+def plate(inference: FoundationPoseInference, tmp_path: Path) -> PlateOnPlane:
     """
-    A plate whose mesh the estimator has loaded and selected.
+    A plate whose mesh the inference has loaded and selected.
     """
     plate = PlateOnPlane(mesh_file=tmp_path / "plate.obj")
-    estimator.load_meshes([plate.mesh_file])
-    estimator.select_mesh(plate.mesh_file)
+    inference.load_mesh_files([plate.mesh_file])
+    inference.select_mesh_file(plate.mesh_file)
     return plate
 
 
@@ -98,9 +102,12 @@ def plate(estimator: FoundationPoseEstimator, tmp_path: Path) -> PlateOnPlane:
 
 
 def test_plate_is_posed_on_the_plane_at_its_mask(
-    estimator: FoundationPoseEstimator, plate: PlateOnPlane
-):
-    pose = estimator.estimate_pose(plate.object_observation)
+    inference: FoundationPoseInference, plate: PlateOnPlane
+) -> None:
+    """
+    The estimated position is the center of the plate lying on the plane.
+    """
+    pose = inference.estimate_pose(plate.object_observation)
 
     numpy.testing.assert_allclose(
         pose.position.to_np()[:3],
@@ -110,11 +117,14 @@ def test_plate_is_posed_on_the_plane_at_its_mask(
 
 
 def test_tracking_an_unmoved_plate_keeps_its_position(
-    estimator: FoundationPoseEstimator, plate: PlateOnPlane
-):
-    pose = estimator.estimate_pose(plate.object_observation)
+    inference: FoundationPoseInference, plate: PlateOnPlane
+) -> None:
+    """
+    Refining a correct pose on the same frame does not move it.
+    """
+    pose = inference.estimate_pose(plate.object_observation)
 
-    tracked_pose = estimator.track_pose(plate.object_observation, pose)
+    tracked_pose = inference.track_pose(plate.object_observation, pose)
 
     numpy.testing.assert_allclose(
         tracked_pose.position.to_np(), pose.position.to_np(), atol=0.005

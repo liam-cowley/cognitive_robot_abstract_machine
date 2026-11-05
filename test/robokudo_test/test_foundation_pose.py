@@ -1,3 +1,7 @@
+"""
+The FoundationPose annotator with scripted inference.
+"""
+
 from __future__ import annotations
 
 # %% Imports
@@ -9,48 +13,62 @@ import pytest
 import trimesh
 from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix, Pose
 from py_trees.common import Status
-from robokudo.annotators.exceptions import (
+from robokudo.annotators.foundation_pose import FoundationPoseAnnotator
+from robokudo.annotators.object_pose_estimation.exceptions import (
     DuplicateObjectClassMesh,
     ImageResolutionMismatch,
 )
-from robokudo.annotators.foundation_pose import (
-    DrawableGeometryKey,
-    EstimateAllObjects,
-    EstimateAndTrack,
-    EstimateUnposedObjects,
-    FoundationPoseAnnotator,
-    ObjectClassMesh,
-    PosedObject,
-    PoseUpdateMode,
-    PoseVisualization,
-    PreviousFramePoses,
-    TrackPosedObjects,
+from robokudo.annotators.object_pose_estimation.mesh_pose_visualization import (
+    MeshPoseVisualization,
     VisualizationFrame,
 )
-from robokudo.annotators.object_observation import ColorAndDepthFrame, ObjectObservation
+from robokudo.annotators.object_pose_estimation.object_observation import (
+    ColorAndDepthFrame,
+    ObjectObservation,
+)
+from robokudo.annotators.object_pose_estimation.pose_tracking import (
+    EstimateAndTrack,
+    TrackPosedObjects,
+)
+from robokudo.annotators.object_pose_estimation.pose_update_mode import (
+    EstimateAllObjects,
+    EstimateUnposedObjects,
+    PoseUpdateMode,
+)
+from robokudo.annotators.object_pose_estimation.pose_visualization import (
+    DrawableGeometryKey,
+    GeometryKind,
+    PoseVisualization,
+)
+from robokudo.annotators.object_pose_estimation.previous_frame_poses import (
+    PosedObject,
+    PreviousFramePoses,
+)
 from robokudo.annotators.outputs import AnnotatorOutputPerPipelineMap
 from robokudo.cas import CASViews
 from robokudo.pipeline import Pipeline
-from robokudo.types.annotation import Classification, PoseAnnotation
 from robokudo.types.camera import CameraObservation
 from robokudo.types.cv import ColorToDepthRatio, Point2D, Rect
-from robokudo.types.scene import ObjectHypothesis
 from robokudo.utils.annotator_helper import transform_pose_from_camera_to_world
 from robokudo.utils.transform import get_transform_matrix_from_q
-from semantic_digital_twin.datastructures.camera_model import PinholeCameraModel
-from semantic_digital_twin.datastructures.camera_resolution import CameraResolution
-from semantic_digital_twin.datastructures.field_of_view import FieldOfView
+from robokudo.utils.type_conversion import get_transform_matrix_from_pose_annotation
 from semantic_digital_twin.datastructures.prefixed_name import PrefixedName
 from semantic_digital_twin.robots.robot_parts import Camera
-from semantic_digital_twin.world import World
-from semantic_digital_twin.world_description.geometry import Color, Mesh, Scale
+from semantic_digital_twin.world_description.geometry import Color
 from semantic_digital_twin.world_description.world_entity import Body
+
+from .object_pose_scene import (
+    FlatSurfaceScene,
+    add_pose_annotation,
+    object_pose_at_depth,
+    pose_annotations,
+)
 
 # %% Scripted pose estimation
 
 
 @dataclass
-class ScriptedPoseEstimator:
+class ScriptedPoseInference:
     """
     Answers every estimate and track with a preset pose and records what it was asked.
     """
@@ -61,31 +79,36 @@ class ScriptedPoseEstimator:
     """
     Pose every estimate returns.
     """
+
     tracked_pose: Pose = field(default_factory=lambda: object_pose_at_depth(0.6))
     """
     Pose every track returns.
     """
+
     loaded_mesh_files: list[Path] = field(default_factory=list)
     """
-    Mesh files of every :meth:`load_meshes` call, in order.
+    Mesh files of every :meth:`load_mesh_files` call, in order.
     """
+
     selected_mesh_files: list[Path] = field(default_factory=list)
     """
-    Mesh file of every :meth:`select_mesh` call, in order.
+    Mesh file of every :meth:`select_mesh_file` call, in order.
     """
+
     estimated_object_observations: list[ObjectObservation] = field(default_factory=list)
     """
     Observation of every :meth:`estimate_pose` call, in order.
     """
+
     previous_poses: list[Pose] = field(default_factory=list)
     """
     Previous pose of every :meth:`track_pose` call, in order.
     """
 
-    def load_meshes(self, mesh_files: list[Path]) -> None:
+    def load_mesh_files(self, mesh_files: list[Path]) -> None:
         self.loaded_mesh_files.extend(mesh_files)
 
-    def select_mesh(self, mesh_file: Path) -> None:
+    def select_mesh_file(self, mesh_file: Path) -> None:
         self.selected_mesh_files.append(mesh_file)
 
     def estimate_pose(self, object_observation: ObjectObservation) -> Pose | None:
@@ -99,131 +122,7 @@ class ScriptedPoseEstimator:
         return self.tracked_pose
 
 
-def object_pose_at_depth(depth: float) -> Pose:
-    """
-    :return: Pose of an object on the optical axis, ``depth`` meters in front of the camera.
-    """
-    return Pose.from_xyz_quaternion(pos_z=depth)
-
-
-# %% Scene
-
-
-@dataclass
-class FlatSurfaceScene:
-    """
-    A camera looking at a flat surface one meter away, with classified objects on it.
-    """
-
-    class_name: str = "box"
-    """
-    Class of the objects the annotator has a mesh for.
-    """
-
-    image_resolution: CameraResolution = field(
-        default_factory=lambda: CameraResolution(width=64, height=48)
-    )
-    """
-    Resolution of the color and the depth image.
-    """
-
-    object_region: Rect = field(
-        default_factory=lambda: Rect(pos=Point2D(x=28, y=20), width=8, height=8)
-    )
-    """
-    Color image region every object covers, around the image center.
-    """
-
-    def fill_cas(self, annotator: FoundationPoseAnnotator) -> None:
-        """
-        Give the CAS of the annotator a new frame of the surface.
-        """
-        cas = annotator.get_cas()
-        world = World()
-        root = Body(name=PrefixedName(name="world"))
-        with world.modify_world():
-            world.add_body(root)
-        camera_model = PinholeCameraModel.from_field_of_view(
-            resolution=self.image_resolution,
-            field_of_view=FieldOfView(
-                horizontal_angle=numpy.radians(60.0),
-                vertical_angle=numpy.radians(45.0),
-            ),
-        )
-        cas.camera_observation = CameraObservation(
-            camera=Camera(
-                name=PrefixedName(name="camera"), root=root, camera_model=camera_model
-            ),
-            effective_camera_model=camera_model,
-            world_T_camera=None,
-            timestamp_nanoseconds=0,
-        )
-        shape = (self.image_resolution.height, self.image_resolution.width)
-        cas.set(CASViews.COLOR_IMAGE, numpy.zeros((*shape, 3), dtype=numpy.uint8))
-        cas.set(
-            CASViews.DEPTH_IMAGE,
-            numpy.full(
-                shape,
-                annotator.descriptor.parameters.depth_units_per_meter,
-                dtype=numpy.uint16,
-            ),
-        )
-        cas.color_to_depth_ratio = ColorToDepthRatio()
-
-    def add_object_hypothesis(
-        self, annotator: FoundationPoseAnnotator, class_name: str | None = None
-    ) -> ObjectHypothesis:
-        """
-        Add a classified hypothesis with a full mask over :attr:`object_region` to the
-        CAS of the annotator.
-
-        :param class_name: Class of the hypothesis, :attr:`class_name` if ``None``.
-        """
-        object_hypothesis = ObjectHypothesis()
-        object_hypothesis.roi.roi = Rect(
-            pos=Point2D(x=self.object_region.pos.x, y=self.object_region.pos.y),
-            width=self.object_region.width,
-            height=self.object_region.height,
-        )
-        object_hypothesis.roi.mask = numpy.full(
-            (self.object_region.height, self.object_region.width),
-            numpy.iinfo(numpy.uint8).max,
-            dtype=numpy.uint8,
-        )
-        object_hypothesis.annotations.append(
-            Classification(classname=class_name or self.class_name, confidence=1.0)
-        )
-        annotator.get_cas().annotations.append(object_hypothesis)
-        return object_hypothesis
-
-    def class_mesh(self, mesh_file: Path, scale: float = 1.0) -> ObjectClassMesh:
-        """
-        :param mesh_file: The mesh file.
-        :param scale: Uniform factor bringing the file coordinates to meters.
-        :return: The mesh of the objects of the scene.
-        """
-        return ObjectClassMesh(
-            class_name=self.class_name,
-            shape=Mesh(filename=str(mesh_file), scale=Scale(x=scale, y=scale, z=scale)),
-        )
-
-    def next_frame(self, annotator: FoundationPoseAnnotator) -> None:
-        """
-        Start a new CAS in the pipeline of the annotator, holding a new frame.
-        """
-        annotator.get_parent_pipeline().create_new_cas()
-        self.fill_cas(annotator)
-
-
 # %% Fixtures
-
-
-@pytest.fixture
-def scene() -> FlatSurfaceScene:
-    """
-    The scene with its default object class and region.
-    """
-    return FlatSurfaceScene()
 
 
 @pytest.fixture
@@ -237,18 +136,18 @@ def box_mesh_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def pose_estimator() -> ScriptedPoseEstimator:
+def pose_inference() -> ScriptedPoseInference:
     """
     A scripted estimator with its default poses.
     """
-    return ScriptedPoseEstimator()
+    return ScriptedPoseInference()
 
 
 @pytest.fixture
 def annotator(
     scene: FlatSurfaceScene,
     box_mesh_file: Path,
-    pose_estimator: ScriptedPoseEstimator,
+    pose_inference: ScriptedPoseInference,
     annotator_output_buffer: AnnotatorOutputPerPipelineMap,
 ) -> FoundationPoseAnnotator:
     """
@@ -259,7 +158,7 @@ def annotator(
     descriptor.parameters = descriptor.Parameters()
     descriptor.parameters.class_meshes = [scene.class_mesh(box_mesh_file)]
     annotator = FoundationPoseAnnotator(
-        descriptor=descriptor, pose_estimator=pose_estimator
+        descriptor=descriptor, foundation_pose_inference=pose_inference
     )
     pipeline = Pipeline("FoundationPose")
     pipeline.add_child(annotator)
@@ -268,38 +167,12 @@ def annotator(
     return annotator
 
 
-def add_pose_annotation(
-    object_hypothesis: ObjectHypothesis, pose: Pose
-) -> PoseAnnotation:
+def current_frame(annotator: FoundationPoseAnnotator) -> ColorAndDepthFrame:
     """
-    Give an object hypothesis a pose annotation of an unrotated pose.
-
-    :param pose: Pose whose translation the annotation gets.
+    :return: The frame the annotator would pose objects in.
     """
-    pose_annotation = PoseAnnotation()
-    pose_annotation.translation = pose.position.to_np()[:3].tolist()
-    pose_annotation.rotation = [0.0, 0.0, 0.0, 1.0]
-    object_hypothesis.annotations.append(pose_annotation)
-    return pose_annotation
-
-
-def pose_annotations(object_hypothesis: ObjectHypothesis) -> list[PoseAnnotation]:
-    """
-    :return: The pose annotations of an object hypothesis, in order.
-    """
-    return [
-        annotation
-        for annotation in object_hypothesis.annotations
-        if isinstance(annotation, PoseAnnotation)
-    ]
-
-
-def annotation_matrix(pose_annotation: PoseAnnotation) -> numpy.ndarray:
-    """
-    :return: The pose of an annotation as a 4x4 homogeneous transform.
-    """
-    return get_transform_matrix_from_q(
-        pose_annotation.rotation, pose_annotation.translation
+    return ColorAndDepthFrame.from_cas(
+        annotator.get_cas(), annotator.descriptor.parameters.depth_units_per_meter
     )
 
 
@@ -309,7 +182,10 @@ def annotation_matrix(pose_annotation: PoseAnnotation) -> numpy.ndarray:
 def test_unscaled_single_mesh_is_estimated_from_its_own_file(
     scene: FlatSurfaceScene,
     box_mesh_file: Path,
-):
+) -> None:
+    """
+    A file that already holds one mesh in meters needs no rewriting.
+    """
     class_mesh = scene.class_mesh(box_mesh_file)
 
     assert class_mesh.estimator_mesh_file == box_mesh_file
@@ -318,7 +194,10 @@ def test_unscaled_single_mesh_is_estimated_from_its_own_file(
 def test_scaled_mesh_is_rewritten_in_meters(
     scene: FlatSurfaceScene,
     box_mesh_file: Path,
-):
+) -> None:
+    """
+    A declared scale is baked into the file the inference loads.
+    """
     scale = 0.5
 
     class_mesh = scene.class_mesh(box_mesh_file, scale=scale)
@@ -332,7 +211,10 @@ def test_scaled_mesh_is_rewritten_in_meters(
 def test_mesh_file_declaring_its_unit_is_rewritten_in_meters(
     scene: FlatSurfaceScene,
     tmp_path: Path,
-):
+) -> None:
+    """
+    A unit declared by the file itself is converted without a configured scale.
+    """
     box = trimesh.creation.box(extents=(100.0, 100.0, 100.0))
     box.units = "millimeters"
     mesh_file = tmp_path / "millimeters.glb"
@@ -352,7 +234,10 @@ def test_mesh_file_declaring_its_unit_is_rewritten_in_meters(
 def test_multi_part_mesh_is_rewritten_as_one_mesh(
     scene: FlatSurfaceScene,
     tmp_path: Path,
-):
+) -> None:
+    """
+    The inference reads a single mesh, so every part ends up in it.
+    """
     parts = [
         trimesh.creation.box(extents=(0.1, 0.1, 0.1)),
         trimesh.creation.box(extents=(0.1, 0.1, 0.1)).apply_translation((0.3, 0, 0)),
@@ -368,7 +253,10 @@ def test_multi_part_mesh_is_rewritten_as_one_mesh(
 
 def test_single_mesh_scene_is_estimated_from_its_own_file(
     scene: FlatSurfaceScene, tmp_path: Path
-):
+) -> None:
+    """
+    A scene wrapping one mesh without a transform counts as a single mesh.
+    """
     mesh_file = tmp_path / "single.glb"
     trimesh.Scene([trimesh.creation.box(extents=(0.1, 0.1, 0.1))]).export(mesh_file)
 
@@ -380,8 +268,11 @@ def test_single_mesh_scene_is_estimated_from_its_own_file(
 def test_two_meshes_of_one_class_are_rejected(
     scene: FlatSurfaceScene,
     box_mesh_file: Path,
-    pose_estimator: ScriptedPoseEstimator,
-):
+    pose_inference: ScriptedPoseInference,
+) -> None:
+    """
+    The mesh of a class must be unambiguous.
+    """
     descriptor = FoundationPoseAnnotator.Descriptor()
     descriptor.parameters = descriptor.Parameters()
     descriptor.parameters.class_meshes = [
@@ -390,14 +281,19 @@ def test_two_meshes_of_one_class_are_rejected(
     ]
 
     with pytest.raises(DuplicateObjectClassMesh):
-        FoundationPoseAnnotator(descriptor=descriptor, pose_estimator=pose_estimator)
+        FoundationPoseAnnotator(
+            descriptor=descriptor, foundation_pose_inference=pose_inference
+        )
 
 
-def test_estimator_loads_every_class_mesh(
-    annotator: FoundationPoseAnnotator, pose_estimator: ScriptedPoseEstimator
-):
+def test_inference_loads_every_class_mesh(
+    annotator: FoundationPoseAnnotator, pose_inference: ScriptedPoseInference
+) -> None:
+    """
+    Every configured mesh reaches the inference on construction.
+    """
     assert (
-        pose_estimator.loaded_mesh_files == annotator.class_meshes.estimator_mesh_files
+        pose_inference.loaded_mesh_files == annotator.class_meshes.estimator_mesh_files
     )
 
 
@@ -406,8 +302,11 @@ def test_estimator_loads_every_class_mesh(
 
 def test_frame_rejects_images_of_different_resolutions(
     annotator: FoundationPoseAnnotator,
-):
-    frame = annotator.color_and_depth_frame()
+) -> None:
+    """
+    The images of a frame must share one pixel grid.
+    """
+    frame = current_frame(annotator)
 
     with pytest.raises(ImageResolutionMismatch):
         ColorAndDepthFrame(
@@ -420,7 +319,12 @@ def test_frame_rejects_images_of_different_resolutions(
 # %% Matching across frames
 
 
-def test_match_takes_the_most_overlapping_object_of_the_class(scene: FlatSurfaceScene):
+def test_match_takes_the_most_overlapping_object_of_the_class(
+    scene: FlatSurfaceScene,
+) -> None:
+    """
+    The best match is taken and no longer available to later objects.
+    """
     overlapping = PosedObject(
         class_name=scene.class_name,
         pose=object_pose_at_depth(0.5),
@@ -439,7 +343,10 @@ def test_match_takes_the_most_overlapping_object_of_the_class(scene: FlatSurface
     assert previous_frame_poses.unmatched_objects == [distant]
 
 
-def test_match_ignores_objects_of_other_classes(scene: FlatSurfaceScene):
+def test_match_ignores_objects_of_other_classes(scene: FlatSurfaceScene) -> None:
+    """
+    Overlap alone does not match objects of different classes.
+    """
     other_class = PosedObject(
         class_name="other",
         pose=object_pose_at_depth(0.5),
@@ -453,7 +360,10 @@ def test_match_ignores_objects_of_other_classes(scene: FlatSurfaceScene):
     )
 
 
-def test_match_requires_the_minimum_overlap(scene: FlatSurfaceScene):
+def test_match_requires_the_minimum_overlap(scene: FlatSurfaceScene) -> None:
+    """
+    An object overlapping too little is not matched and stays available.
+    """
     distant = PosedObject(
         class_name=scene.class_name,
         pose=object_pose_at_depth(0.5),
@@ -478,13 +388,16 @@ def test_match_requires_the_minimum_overlap(scene: FlatSurfaceScene):
         (TrackPosedObjects(), False),
     ],
 )
-def test_mode_leaves_object_without_pose(
+def test_mode_gives_no_new_pose(
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
+    pose_inference: ScriptedPoseInference,
     mode: PoseUpdateMode,
     is_posed: bool,
     scene: FlatSurfaceScene,
-):
+) -> None:
+    """
+    Neither estimate nor track runs for an object the mode leaves out.
+    """
     annotator.descriptor.parameters.pose_update_mode = mode
     object_hypothesis = scene.add_object_hypothesis(annotator)
     if is_posed:
@@ -494,8 +407,8 @@ def test_mode_leaves_object_without_pose(
     annotator.compute()
 
     assert object_hypothesis.annotations == annotations_before
-    assert pose_estimator.estimated_object_observations == []
-    assert pose_estimator.previous_poses == []
+    assert pose_inference.estimated_object_observations == []
+    assert pose_inference.previous_poses == []
 
 
 @pytest.mark.parametrize(
@@ -508,10 +421,13 @@ def test_mode_leaves_object_without_pose(
 )
 def test_mode_estimates_object_without_pose(
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
+    pose_inference: ScriptedPoseInference,
     mode: PoseUpdateMode,
     scene: FlatSurfaceScene,
-):
+) -> None:
+    """
+    An object without a known pose is estimated, never tracked.
+    """
     annotator.descriptor.parameters.pose_update_mode = mode
     object_hypothesis = scene.add_object_hypothesis(annotator)
 
@@ -519,18 +435,22 @@ def test_mode_estimates_object_without_pose(
 
     (pose_annotation,) = pose_annotations(object_hypothesis)
     numpy.testing.assert_allclose(
-        annotation_matrix(pose_annotation), pose_estimator.estimated_pose.to_np()
+        get_transform_matrix_from_pose_annotation(pose_annotation),
+        pose_inference.estimated_pose.to_np(),
     )
-    assert pose_estimator.previous_poses == []
+    assert pose_inference.previous_poses == []
 
 
 @pytest.mark.parametrize("mode", [EstimateAndTrack(), TrackPosedObjects()])
 def test_mode_tracks_object_from_its_pose_annotation(
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
+    pose_inference: ScriptedPoseInference,
     mode: PoseUpdateMode,
     scene: FlatSurfaceScene,
-):
+) -> None:
+    """
+    Tracking starts at the annotated pose and its result is annotated.
+    """
     annotator.descriptor.parameters.pose_update_mode = mode
     object_hypothesis = scene.add_object_hypothesis(annotator)
     known_pose = object_pose_at_depth(0.4)
@@ -538,33 +458,43 @@ def test_mode_tracks_object_from_its_pose_annotation(
 
     annotator.compute()
 
-    (previous_pose,) = pose_estimator.previous_poses
+    (previous_pose,) = pose_inference.previous_poses
     numpy.testing.assert_allclose(previous_pose.to_np(), known_pose.to_np())
     numpy.testing.assert_allclose(
-        annotation_matrix(pose_annotations(object_hypothesis)[-1]),
-        pose_estimator.tracked_pose.to_np(),
+        get_transform_matrix_from_pose_annotation(
+            pose_annotations(object_hypothesis)[-1]
+        ),
+        pose_inference.tracked_pose.to_np(),
     )
 
 
 def test_estimate_all_objects_ignores_existing_pose(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
-):
+    pose_inference: ScriptedPoseInference,
+) -> None:
+    """
+    A known pose does not turn the estimate into a track.
+    """
     annotator.descriptor.parameters.pose_update_mode = EstimateAllObjects()
     object_hypothesis = scene.add_object_hypothesis(annotator)
     add_pose_annotation(object_hypothesis, object_pose_at_depth(0.4))
 
     annotator.compute()
 
-    assert pose_estimator.previous_poses == []
+    assert pose_inference.previous_poses == []
     numpy.testing.assert_allclose(
-        annotation_matrix(pose_annotations(object_hypothesis)[-1]),
-        pose_estimator.estimated_pose.to_np(),
+        get_transform_matrix_from_pose_annotation(
+            pose_annotations(object_hypothesis)[-1]
+        ),
+        pose_inference.estimated_pose.to_np(),
     )
 
 
-def test_compute_records_its_duration(annotator: FoundationPoseAnnotator):
+def test_compute_records_its_duration(annotator: FoundationPoseAnnotator) -> None:
+    """
+    The time of a frame is available for profiling.
+    """
     annotator.compute()
 
     assert annotator._times["compute"] > 0
@@ -573,14 +503,17 @@ def test_compute_records_its_duration(annotator: FoundationPoseAnnotator):
 def test_object_of_unknown_class_is_not_posed(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
-):
+    pose_inference: ScriptedPoseInference,
+) -> None:
+    """
+    A class without a mesh reaches neither the inference nor the annotations.
+    """
     object_hypothesis = scene.add_object_hypothesis(annotator, class_name="unknown")
 
     annotator.compute()
 
     assert pose_annotations(object_hypothesis) == []
-    assert pose_estimator.estimated_object_observations == []
+    assert pose_inference.estimated_object_observations == []
 
 
 # %% Pose annotations
@@ -589,8 +522,11 @@ def test_object_of_unknown_class_is_not_posed(
 def test_pose_annotation_reaches_the_world_through_the_camera_pose_of_the_cas(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
-):
+    pose_inference: ScriptedPoseInference,
+) -> None:
+    """
+    Annotations stay in the camera frame, and the CAS brings them to the world.
+    """
     world_T_camera = get_transform_matrix_from_q(
         [0.0, 0.0, numpy.sin(numpy.pi / 4), numpy.cos(numpy.pi / 4)], [1.0, 2.0, 3.0]
     )
@@ -617,8 +553,10 @@ def test_pose_annotation_reaches_the_world_through_the_camera_pose_of_the_cas(
 
     (pose_annotation,) = pose_annotations(object_hypothesis)
     numpy.testing.assert_allclose(
-        annotation_matrix(transform_pose_from_camera_to_world(cas, pose_annotation)),
-        world_T_camera @ pose_estimator.estimated_pose.to_np(),
+        get_transform_matrix_from_pose_annotation(
+            transform_pose_from_camera_to_world(cas, pose_annotation)
+        ),
+        world_T_camera @ pose_inference.estimated_pose.to_np(),
         atol=1e-9,
     )
     assert pose_annotation.source == annotator.get_class_name()
@@ -627,8 +565,11 @@ def test_pose_annotation_reaches_the_world_through_the_camera_pose_of_the_cas(
 def test_tracked_pose_overwrites_its_annotation_when_configured(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
-):
+    pose_inference: ScriptedPoseInference,
+) -> None:
+    """
+    Updating in place adds no second annotation.
+    """
     annotator.descriptor.parameters.pose_update_mode = EstimateAndTrack(
         update_existing_pose_annotations=True
     )
@@ -639,16 +580,20 @@ def test_tracked_pose_overwrites_its_annotation_when_configured(
 
     assert pose_annotations(object_hypothesis) == [pose_annotation]
     numpy.testing.assert_allclose(
-        annotation_matrix(pose_annotation), pose_estimator.tracked_pose.to_np()
+        get_transform_matrix_from_pose_annotation(pose_annotation),
+        pose_inference.tracked_pose.to_np(),
     )
 
 
 def test_object_without_estimated_pose_gets_no_annotation(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
-):
-    pose_estimator.estimated_pose = None
+    pose_inference: ScriptedPoseInference,
+) -> None:
+    """
+    A failed estimate leaves the annotations untouched.
+    """
+    pose_inference.estimated_pose = None
     object_hypothesis = scene.add_object_hypothesis(annotator)
 
     annotator.compute()
@@ -662,8 +607,11 @@ def test_object_without_estimated_pose_gets_no_annotation(
 def test_object_is_tracked_from_its_latest_pose_annotation(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
-):
+    pose_inference: ScriptedPoseInference,
+) -> None:
+    """
+    With several annotations, the last one is the starting point.
+    """
     object_hypothesis = scene.add_object_hypothesis(annotator)
     add_pose_annotation(object_hypothesis, object_pose_at_depth(0.4))
     latest_pose = object_pose_at_depth(0.45)
@@ -671,15 +619,18 @@ def test_object_is_tracked_from_its_latest_pose_annotation(
 
     annotator.compute()
 
-    (previous_pose,) = pose_estimator.previous_poses
+    (previous_pose,) = pose_inference.previous_poses
     numpy.testing.assert_allclose(previous_pose.to_np(), latest_pose.to_np())
 
 
 def test_object_is_tracked_from_the_previous_frame(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
-):
+    pose_inference: ScriptedPoseInference,
+) -> None:
+    """
+    A matching object of the previous frame stands in for a missing annotation.
+    """
     scene.add_object_hypothesis(annotator)
     annotator.compute()
     scene.next_frame(annotator)
@@ -687,21 +638,26 @@ def test_object_is_tracked_from_the_previous_frame(
 
     annotator.compute()
 
-    (previous_pose,) = pose_estimator.previous_poses
+    (previous_pose,) = pose_inference.previous_poses
     numpy.testing.assert_allclose(
-        previous_pose.to_np(), pose_estimator.estimated_pose.to_np()
+        previous_pose.to_np(), pose_inference.estimated_pose.to_np()
     )
     numpy.testing.assert_allclose(
-        annotation_matrix(pose_annotations(object_hypothesis)[0]),
-        pose_estimator.tracked_pose.to_np(),
+        get_transform_matrix_from_pose_annotation(
+            pose_annotations(object_hypothesis)[0]
+        ),
+        pose_inference.tracked_pose.to_np(),
     )
 
 
 def test_object_is_not_tracked_across_frames_when_disabled(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
-):
+    pose_inference: ScriptedPoseInference,
+) -> None:
+    """
+    Without matching across frames, each frame estimates anew.
+    """
     annotator.descriptor.parameters.pose_update_mode = EstimateAndTrack(
         track_across_frames=False
     )
@@ -712,25 +668,30 @@ def test_object_is_not_tracked_across_frames_when_disabled(
 
     annotator.compute()
 
-    assert pose_estimator.previous_poses == []
-    assert len(pose_estimator.estimated_object_observations) == 2
+    assert pose_inference.previous_poses == []
+    assert len(pose_inference.estimated_object_observations) == 2
 
 
 def test_track_leaving_the_mask_is_estimated_anew(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
-):
-    pose_estimator.tracked_pose = Pose.from_xyz_quaternion(pos_x=0.5, pos_z=0.5)
+    pose_inference: ScriptedPoseInference,
+) -> None:
+    """
+    An implausible track is replaced by a new estimate.
+    """
+    pose_inference.tracked_pose = Pose.from_xyz_quaternion(pos_x=0.5, pos_z=0.5)
     object_hypothesis = scene.add_object_hypothesis(annotator)
     add_pose_annotation(object_hypothesis, object_pose_at_depth(0.4))
 
     annotator.compute()
 
-    assert len(pose_estimator.previous_poses) == 1
+    assert len(pose_inference.previous_poses) == 1
     numpy.testing.assert_allclose(
-        annotation_matrix(pose_annotations(object_hypothesis)[-1]),
-        pose_estimator.estimated_pose.to_np(),
+        get_transform_matrix_from_pose_annotation(
+            pose_annotations(object_hypothesis)[-1]
+        ),
+        pose_inference.estimated_pose.to_np(),
     )
 
 
@@ -740,8 +701,11 @@ def test_track_leaving_the_mask_is_estimated_anew(
 def test_object_mask_is_placed_at_depth_image_resolution(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-    pose_estimator: ScriptedPoseEstimator,
-):
+    pose_inference: ScriptedPoseInference,
+) -> None:
+    """
+    A mask given in color pixels covers the same region of the depth image.
+    """
     cas = annotator.get_cas()
     color_to_depth_ratio = ColorToDepthRatio(horizontal=0.5, vertical=0.5)
     cas.color_to_depth_ratio = color_to_depth_ratio
@@ -751,7 +715,7 @@ def test_object_mask_is_placed_at_depth_image_resolution(
 
     annotator.compute()
 
-    (object_observation,) = pose_estimator.estimated_object_observations
+    (object_observation,) = pose_inference.estimated_object_observations
     expected_region = color_to_depth_ratio.depth_region(scene.object_region)
     assert object_observation.mask.shape == cas.get(CASViews.DEPTH_IMAGE).shape
     assert object_observation.mask_region == expected_region
@@ -765,26 +729,29 @@ def test_object_mask_is_placed_at_depth_image_resolution(
 
 def visualization_of(
     annotator: FoundationPoseAnnotator, frame: VisualizationFrame
-) -> PoseVisualization:
+) -> MeshPoseVisualization:
     """
     :return: An empty visualization of the current frame of the annotator.
     """
     cas = annotator.get_cas()
-    return PoseVisualization(
+    return MeshPoseVisualization(
         color_image=cas.get_copy(CASViews.COLOR_IMAGE),
         color_to_depth_ratio=cas.color_to_depth_ratio,
-        camera_model=annotator.color_and_depth_frame().camera_model,
-        frame=frame,
+        camera_model=current_frame(annotator).camera_model,
+        visualization_frame=frame,
     )
 
 
 def test_mesh_frame_bounding_box_spans_the_mesh(
     scene: FlatSurfaceScene, annotator: FoundationPoseAnnotator
-):
+) -> None:
+    """
+    The box in the mesh frame has the extents of the mesh.
+    """
     shape = annotator.class_meshes.meshes_by_class_name[scene.class_name].shape
     visualization = visualization_of(annotator, VisualizationFrame.MESH)
 
-    bounding_box = visualization.bounding_box(shape, object_pose_at_depth(0.5))
+    bounding_box = visualization.compute_bounding_box(shape, object_pose_at_depth(0.5))
 
     numpy.testing.assert_allclose(bounding_box.extent, shape.mesh.extents)
 
@@ -792,13 +759,16 @@ def test_mesh_frame_bounding_box_spans_the_mesh(
 def test_smallest_bounding_box_frame_uses_the_oriented_box(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-):
+) -> None:
+    """
+    The box in its own frame has the extents of the oriented bounding box.
+    """
     shape = annotator.class_meshes.meshes_by_class_name[scene.class_name].shape
     visualization = visualization_of(
         annotator, VisualizationFrame.SMALLEST_BOUNDING_BOX
     )
 
-    bounding_box = visualization.bounding_box(shape, object_pose_at_depth(0.5))
+    bounding_box = visualization.compute_bounding_box(shape, object_pose_at_depth(0.5))
 
     numpy.testing.assert_allclose(
         bounding_box.extent, shape.mesh.bounding_box_oriented.primitive.extents
@@ -807,19 +777,25 @@ def test_smallest_bounding_box_frame_uses_the_oriented_box(
 
 def test_nothing_is_drawn_for_an_object_behind_the_camera(
     scene: FlatSurfaceScene, annotator: FoundationPoseAnnotator
-):
+) -> None:
+    """
+    Points behind the camera have no valid projection, so nothing is drawn.
+    """
     shape = annotator.class_meshes.meshes_by_class_name[scene.class_name].shape
     visualization = visualization_of(annotator, VisualizationFrame.MESH)
 
-    visualization.draw(shape, object_pose_at_depth(-0.5), "behind the camera")
+    visualization.draw_mesh(shape, object_pose_at_depth(-0.5), "behind the camera")
 
     assert not visualization.color_image.any()
 
 
 def test_axes_are_drawn_in_color_image_pixels_from_the_depth_image_calibration(
     annotator: FoundationPoseAnnotator,
-):
-    color_camera_model = annotator.color_and_depth_frame().camera_model
+) -> None:
+    """
+    Axes land on the color image even though the calibration is at depth resolution.
+    """
+    color_camera_model = current_frame(annotator).camera_model
     color_to_depth_ratio = ColorToDepthRatio(horizontal=0.5, vertical=0.5)
     visualization = PoseVisualization(
         color_image=annotator.get_cas().get_copy(CASViews.COLOR_IMAGE),
@@ -848,7 +824,10 @@ def test_axes_are_drawn_in_color_image_pixels_from_the_depth_image_calibration(
 
 def test_axes_reaching_behind_the_camera_are_not_drawn(
     annotator: FoundationPoseAnnotator,
-):
+) -> None:
+    """
+    A single axis end behind the camera suppresses all axes.
+    """
     visualization = visualization_of(annotator, VisualizationFrame.MESH)
     pose_facing_the_camera = Pose.from_xyz_quaternion(
         0.0, 0.0, 0.05, 1.0, 0.0, 0.0, 0.0
@@ -859,17 +838,51 @@ def test_axes_reaching_behind_the_camera_are_not_drawn(
     assert not visualization.color_image.any()
 
 
+def test_points_are_projected_to_color_image_pixels(
+    annotator: FoundationPoseAnnotator,
+) -> None:
+    """
+    A projected point is scaled from depth to color image pixels on each axis.
+    """
+    camera_model = current_frame(annotator).camera_model
+    color_to_depth_ratio = ColorToDepthRatio(horizontal=0.5, vertical=0.5)
+    intrinsic_matrix = camera_model.intrinsic_matrix
+    depth = 2.0
+    offset_x = 0.25
+
+    (pixel,) = color_to_depth_ratio.project_to_color_pixels(
+        numpy.array([[offset_x, 0.0, depth]]), camera_model
+    )
+
+    expected_depth_pixel = (
+        intrinsic_matrix[0, 0] * offset_x / depth + intrinsic_matrix[0, 2],
+        intrinsic_matrix[1, 2],
+    )
+    assert pixel.tolist() == [
+        int(expected_depth_pixel[0] / color_to_depth_ratio.horizontal),
+        int(expected_depth_pixel[1] / color_to_depth_ratio.vertical),
+    ]
+
+
 def test_posed_objects_are_drawn_and_named_in_the_3d_view(
     scene: FlatSurfaceScene,
     annotator: FoundationPoseAnnotator,
-):
+) -> None:
+    """
+    Each geometry of a posed object has a name unique to the object and its kind.
+    """
     annotator.descriptor.parameters.visualize_object_mesh = True
-    scene.add_object_hypothesis(annotator)
+    object_hypothesis = scene.add_object_hypothesis(annotator)
 
     status = annotator.compute()
 
     output = annotator.get_annotator_output_struct()
     names = [geometry[DrawableGeometryKey.NAME] for geometry in output.geometries]
+    label = f"{object_hypothesis.id}: {scene.class_name}"
     assert status == Status.SUCCESS
     assert output.image.any()
-    assert len(names) == len(set(names)) == 3
+    assert names == [
+        f"{label} {GeometryKind.BOUNDING_BOX}",
+        f"{label} {GeometryKind.AXES}",
+        f"{label} {GeometryKind.OBJECT_MESH}",
+    ]

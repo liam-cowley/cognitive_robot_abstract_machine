@@ -26,7 +26,7 @@ from semantic_digital_twin.datastructures.camera_model import (
 )
 from semantic_digital_twin.datastructures.camera_resolution import CameraResolution
 
-from robokudo.annotators.object_observation import (
+from robokudo.annotators.object_pose_estimation.object_observation import (
     ColorAndDepthFrame,
     ObjectObservation,
 )
@@ -50,11 +50,11 @@ class EnginePrecision(StrEnum):
     """
 
 
-# %% FoundationPose estimator
+# %% FoundationPose inference
 
 
 @dataclass
-class FoundationPoseEstimator:
+class FoundationPoseInference:
     """
     FoundationPose with its refine and score networks running as TensorRT engines.
 
@@ -86,7 +86,7 @@ class FoundationPoseEstimator:
 
     foundation_pose: FoundationPose = field(init=False, repr=False)
     """
-    The estimator holding the engines and the loaded meshes on the GPU.
+    The model holding the engines and the loaded meshes on the GPU.
     """
 
     def __post_init__(self) -> None:
@@ -102,15 +102,15 @@ class FoundationPoseEstimator:
             max_depth=self.usable_depth_range.maximum_distance,
         )
 
-    def load_meshes(self, mesh_files: list[Path]) -> None:
+    def load_mesh_files(self, mesh_files: list[Path]) -> None:
         """
-        Load meshes so that selecting any of them with :meth:`select_mesh` is immediate,
-        and run a first estimate and track, since the first TensorRT inferences are slow.
+        Load meshes so that selecting any of them with :meth:`select_mesh_file` is
+        immediate, and run a first estimate and track to warm up the engines.
 
         :param mesh_files: Mesh files in meters, each holding a single mesh.
         """
         for mesh_file in mesh_files:
-            self.select_mesh(mesh_file)
+            self.select_mesh_file(mesh_file)
         if not mesh_files:
             return
         warm_up_object_observation = self.warm_up_object_observation
@@ -118,7 +118,7 @@ class FoundationPoseEstimator:
         if pose is not None:
             self.track_pose(warm_up_object_observation, pose)
 
-    def select_mesh(self, mesh_file: Path) -> None:
+    def select_mesh_file(self, mesh_file: Path) -> None:
         """
         Use a mesh for the following pose estimates and tracks.
 
@@ -176,6 +176,7 @@ class FoundationPoseEstimator:
         resolution = CameraResolution(width=640, height=480)
         focal_length = 500.0
         object_half_size = 40
+        plane_depth = 0.5
         center_x, center_y = resolution.width // 2, resolution.height // 2
         mask = numpy.zeros((resolution.height, resolution.width), dtype=numpy.bool_)
         mask[
@@ -187,7 +188,7 @@ class FoundationPoseEstimator:
                 (resolution.height, resolution.width, 3), dtype=numpy.uint8
             ),
             depth_image=numpy.full(
-                (resolution.height, resolution.width), 0.5, dtype=numpy.float32
+                (resolution.height, resolution.width), plane_depth, dtype=numpy.float32
             ),
             camera_model=PinholeCameraModel(
                 image_resolution=resolution,

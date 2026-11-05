@@ -26,6 +26,8 @@ from robokudo.identifier import BBIdentifier
 
 from .dataset.cup_on_counter import CupOnCounterRecording
 
+from .object_pose_scene import FlatSurfaceScene
+
 # %% Mongo storage preservation
 
 
@@ -181,6 +183,14 @@ def isolate_semantic_world() -> Iterator[None]:
 
 
 # %% annotator visualization output
+
+
+@pytest.fixture
+def scene() -> FlatSurfaceScene:
+    """
+    The object pose estimation scene with its default object class and region.
+    """
+    return FlatSurfaceScene()
 
 
 @pytest.fixture
