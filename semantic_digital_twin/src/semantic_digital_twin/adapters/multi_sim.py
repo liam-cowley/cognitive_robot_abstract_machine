@@ -2722,11 +2722,26 @@ class MujocoBuilder(MultiSimBuilder):
         self._thickened_mesh_paths = {}
 
     @property
+    def _cloth_sheets(self) -> list[ClothSheet]:
+        """
+        :return: The cloth sheets of the world being built: those it holds itself and
+            those its semantic annotations carry.
+        """
+        return [
+            *self.world.get_simulator_properties_of_type(ClothSheet),
+            *(
+                cloth
+                for annotation in self.world.semantic_annotations
+                for cloth in annotation.get_simulator_properties_of_type(ClothSheet)
+            ),
+        ]
+
+    @property
     def _body_minimum_mass(self) -> float:
         """
         :return: The mass every body of the world being built weighs at least.
         """
-        if self.world.get_simulator_properties_of_type(ClothSheet):
+        if self._cloth_sheets:
             return self.cloth_vertex_minimum_mass
         return self.minimum_mass
 
@@ -2734,7 +2749,7 @@ class MujocoBuilder(MultiSimBuilder):
         self._build_contact_exclusions()
         self._build_equalities()
         self._build_tendons()
-        for cloth in self.world.get_simulator_properties_of_type(ClothSheet):
+        for cloth in self._cloth_sheets:
             self._build_cloth_sheet(cloth)
         self.spec.compile()
         self.spec.to_file(file_path)
@@ -2777,7 +2792,7 @@ class MujocoBuilder(MultiSimBuilder):
             qpos += MujocoConnectionJoints.of(
                 body.parent_connection, self.world, self.element_names
             ).home_joint_positions()
-        for cloth in self.world.get_simulator_properties_of_type(ClothSheet):
+        for cloth in self._cloth_sheets:
             # a vertex starts where its body was built, so its slide joints start at zero
             qpos += [0.0] * cloth.starting_surface.vertices.size
         key_element.set("qpos", " ".join(map(str, qpos)))

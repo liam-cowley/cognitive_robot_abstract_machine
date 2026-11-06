@@ -44,6 +44,7 @@ from semantic_digital_twin.datastructures.definitions import GripperState
 from semantic_digital_twin.robots.robot_part_mixins import HasTwoFingers
 from semantic_digital_twin.robots.robot_parts import AbstractRobot, Arm
 from semantic_digital_twin.robots.tiago import TiagoMujoco
+from semantic_digital_twin.semantic_annotations.semantic_annotations import TShirt
 from semantic_digital_twin.specifications.kinematic_structure_entities import (
     BodySpecification,
 )
@@ -53,7 +54,6 @@ from semantic_digital_twin.world import World
 from semantic_digital_twin.world_description.cloth import (
     Cotton,
     Fabric,
-    ClothSheet,
     GarmentFile,
 )
 from semantic_digital_twin.world_description.geometry import Color, Scale
@@ -230,22 +230,24 @@ class TShirtSwingDemonstration(RobotDemonstration):
         return RobotSpecification(self.used_robot)
 
     def is_scene_populated(self, world: World) -> bool:
-        return bool(world.get_simulator_properties_of_type(ClothSheet))
+        return bool(world.get_semantic_annotations_by_type(TShirt))
 
     def populate_scene(self, world: World) -> None:
         """
         Lay the T-shirt spread out on the table, its neckline towards the robot and its
         sleeves to the sides.
         """
-        world.add_simulator_property(
-            ClothSheet(
-                name=SceneEntity.T_SHIRT,
+        t_shirt = TShirt.get_annotation_specification(
+            SceneEntity.T_SHIRT,
+            TShirt.get_default_root_kinematic_structure_entity_specification(),
+            annotation_kwargs={"fabric": self.t_shirt_fabric},
+        ).spawn(world, parent_T_self=self._world_T_t_shirt)
+        with world.modify_world():
+            t_shirt.add_cloth_sheet(
                 surface=self.t_shirt_garment.create_surface(self._world_T_t_shirt),
                 mass=self.t_shirt_mass,
-                fabric=self.t_shirt_fabric,
                 color=self.t_shirt_color,
             )
-        )
 
     @property
     def _world_T_t_shirt(self) -> HomogeneousTransformationMatrix:
@@ -372,12 +374,13 @@ class TShirtSwingDemonstration(RobotDemonstration):
             the robot's left lies at the start.
         """
         world_P_shoulder = self._world_T_t_shirt @ self.t_shirt_P_left_shoulder
-        [t_shirt] = world.get_simulator_properties_of_type(ClothSheet)
-        _, [closest] = t_shirt.starting_surface.nearest.vertex(
+        [t_shirt] = world.get_semantic_annotations_by_type(TShirt)
+        sheet = t_shirt.cloth_sheet
+        _, [closest] = sheet.starting_surface.nearest.vertex(
             [world_P_shoulder.to_np()[:3]]
         )
         return Pose.from_xyz_rpy(
-            *t_shirt.starting_surface.vertices[closest], reference_frame=world.root
+            *sheet.starting_surface.vertices[closest], reference_frame=world.root
         )
 
     @staticmethod

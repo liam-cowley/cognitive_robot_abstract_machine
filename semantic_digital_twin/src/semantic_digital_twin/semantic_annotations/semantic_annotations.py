@@ -64,12 +64,17 @@ from krrood_spatial_math.spatial_types import (
     Vector3,
 )
 from krrood_spatial_math.spatial_types import Pose, RotationMatrix
-from semantic_digital_twin.world_description.cloth import Cotton, Fabric
+from semantic_digital_twin.world_description.cloth import (
+    ClothSheet,
+    Cotton,
+    Fabric,
+)
 from semantic_digital_twin.world_description.connections import (
     FixedConnection,
 )
 from semantic_digital_twin.world_description.geometry import (
     VolumetricBoundingBox,
+    Mesh,
     Scale,
     Color,
 )
@@ -79,6 +84,9 @@ from semantic_digital_twin.world_description.shape_collection import (
 from semantic_digital_twin.world_description.world_entity import (
     SemanticAnnotation,
     Body,
+)
+from semantic_digital_twin.world_description.world_modification import (
+    synchronized_attribute_modification,
 )
 from semantic_digital_twin.specifications.connections import ConnectionSpecification
 from semantic_digital_twin.specifications.kinematic_structure_entities import (
@@ -2031,3 +2039,25 @@ class TShirt(IsNonRigid, IsPerceivable):
     """
     The kind of cloth the T-shirt is made of.
     """
+
+    @synchronized_attribute_modification
+    def add_cloth_sheet(
+        self, surface: Mesh, mass: float, color: Color | None = None
+    ) -> None:
+        """
+        Make a physical simulation deform this T-shirt, as a sheet of its fabric named
+        after it.
+
+        :param surface: The triangles of the sheet, placed in the world frame.
+        :param mass: The mass of the whole T-shirt, in kilograms.
+        :param color: The color the T-shirt is drawn in, the sheet's default if omitted.
+        """
+        self.add_simulator_property(
+            ClothSheet(
+                name=self.name.name,
+                surface=surface,
+                mass=mass,
+                fabric=self.fabric,
+                color=color if color is not None else Color(),
+            )
+        )

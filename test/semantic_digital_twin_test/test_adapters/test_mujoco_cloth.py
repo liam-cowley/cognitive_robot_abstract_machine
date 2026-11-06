@@ -22,6 +22,7 @@ from semantic_digital_twin.adapters.multi_sim import (
     MujocoSim,
 )
 from semantic_digital_twin.datastructures.prefixed_name import PrefixedName
+from semantic_digital_twin.semantic_annotations.semantic_annotations import TShirt
 from semantic_digital_twin.world import World
 from semantic_digital_twin.world_description.cloth import (
     ClothSheet,
@@ -330,6 +331,32 @@ def test_every_vertex_of_a_cloth_sheet_collides_with_a_sphere_of_its_own(
     assert (model.geom_contype[spheres] == ContactCategories.CLOTH_VERTEX).all()
     assert (model.geom_conaffinity[spheres] == ContactCategories.DEFAULT).all()
     assert not ContactCategories.CLOTH_VERTEX & ContactCategories.DEFAULT
+
+
+def test_the_cloth_sheet_of_an_annotation_is_built(
+    tmp_path: Path, triangle: Mesh
+) -> None:
+    """
+    A cloth sheet an annotation carries is built exactly as one the world holds.
+    """
+    world = World()
+    with world.modify_world():
+        world.add_body(Body(name=PrefixedName("root")))
+    t_shirt = TShirt.get_annotation_specification(
+        "t_shirt", TShirt.get_default_root_kinematic_structure_entity_specification()
+    ).spawn(world)
+    with world.modify_world():
+        t_shirt.add_cloth_sheet(surface=triangle, mass=0.15)
+    scene = tmp_path / "scene.xml"
+
+    MujocoBuilder().build_world(world=world, file_path=str(scene))
+
+    model = mujoco.MjModel.from_xml_path(str(scene))
+    assert model.nflex == 1
+    assert (
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_FLEX, t_shirt.cloth_sheet.name)
+        == 0
+    )
 
 
 def test_a_cloth_sheet_touches_what_it_collides_with_at_its_collision_radius(
