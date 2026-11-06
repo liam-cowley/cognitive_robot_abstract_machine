@@ -284,6 +284,35 @@ def test_every_vertex_of_a_cloth_sheet_collides_with_a_sphere_of_its_own(
     ) == 0
 
 
+def test_a_cloth_sheet_touches_what_it_collides_with_at_its_collision_radius(
+    tmp_path: Path, triangle: trimesh.Trimesh
+) -> None:
+    """
+    The simulation lets the cloth touch other objects at the cloth sheet's collision
+    radius from its surface.
+    """
+    cloth = ClothSheet(name="cloth", surface=triangle, mass=0.15, collision_radius=2e-3)
+
+    model = build_model_of(cloth, tmp_path)
+
+    flex_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_FLEX, cloth.name)
+    assert model.flex_radius[flex_id] == pytest.approx(cloth.collision_radius)
+
+
+def test_a_cloth_sheet_does_not_collide_with_itself(
+    tmp_path: Path, triangle: trimesh.Trimesh
+) -> None:
+    """
+    The simulation lets the parts of a cloth pass through each other.
+    """
+    cloth = ClothSheet(name="cloth", surface=triangle, mass=0.15)
+
+    model = build_model_of(cloth, tmp_path)
+
+    flex_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_FLEX, cloth.name)
+    assert model.flex_selfcollide[flex_id] == mujoco.mjtFlexSelf.mjFLEXSELF_NONE
+
+
 # %% simulating
 
 
@@ -292,7 +321,7 @@ def test_a_t_shirt_dropped_onto_a_table_lands_on_it_and_keeps_its_extent(
 ) -> None:
     """
     A T-shirt of two layers dropped onto a table lands on its top, sinking into it by
-    less than its collision radius, and keeps its spread-out extent.
+    less than its thickness, and keeps its spread-out extent.
 
     .. note:: The T-shirt keeps the relief it was laid out with, since that is the shape
         it bends back to, so only its lowest vertices touch the table.
@@ -305,7 +334,7 @@ def test_a_t_shirt_dropped_onto_a_table_lands_on_it_and_keeps_its_extent(
     ).result
 
     height_above_table = positions[:, 2] - t_shirt_above_table.table_top_height
-    assert -t_shirt.thickness / 2 < height_above_table.min() <= t_shirt.thickness / 2
+    assert -t_shirt.thickness < height_above_table.min() <= t_shirt.collision_radius
     assert numpy.allclose(
         numpy.ptp(positions[:, :2], axis=0), t_shirt.surface.extents[:2], atol=2e-2
     )
