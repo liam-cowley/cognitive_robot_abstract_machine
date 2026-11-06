@@ -234,6 +234,48 @@ class MujocoFlexElasticity(IntEnum):
     """
 
 
+class MujocoClothVertexCollision(IntEnum):
+    """
+    The collision bitmasks of the spheres a cloth's vertices collide with. A pair of geoms
+    collides if the contact type of either shares a bit with the affinity of the other.
+    """
+
+    CONTACT_TYPE = 4
+    """
+    A bit no other geom's affinity holds by default, so vertices ignore each other.
+    """
+
+    CONTACT_AFFINITY = 1
+    """
+    The bit ordinary geoms carry as their contact type, so vertices collide with them.
+    """
+
+
+@dataclass
+class MujocoClothVertexContact:
+    """
+    How firmly the sphere of a cloth's vertex touches what it collides with, which
+    decides how far a resting cloth's shell reaches into a surface.
+    """
+
+    margin_to_radius_ratio: float = 0.4
+    """
+    The distance at which a sphere's contact acts, as a fraction of its radius.
+    """
+
+    solver_reference: list[float] = field(default_factory=lambda: [4e-3, 1.0])
+    """
+    MuJoCo's ``solref`` of the contact: its time constant, in seconds, and damping ratio.
+    """
+
+    solver_impedance: list[float] = field(
+        default_factory=lambda: [0.99, 0.999, 1e-3, 0.5, 2.0]
+    )
+    """
+    MuJoCo's ``solimp`` of the contact: how strongly the constraint acts as it deepens.
+    """
+
+
 @dataclass(eq=False)
 class MultiSimCamera(SimulatorAdditionalProperty):
     """
@@ -2629,6 +2671,13 @@ class MujocoBuilder(MultiSimBuilder):
     inertial or a shape can still move.
     """
 
+    cloth_vertex_contact: MujocoClothVertexContact = field(
+        default_factory=MujocoClothVertexContact
+    )
+    """
+    How firmly the vertices of the cloth sheets touch what they collide with.
+    """
+
     minimum_inertia: float = 1e-6
     """
     The moment of inertia, in kilogram square metres, every body has at least about each
@@ -3309,6 +3358,10 @@ class MujocoBuilder(MultiSimBuilder):
         .. note:: Every vertex weighs at least :attr:`minimum_mass`, so a cloth with many
             vertices weighs more than its :attr:`ClothSheet.mass`.
 
+        .. note:: MuJoCo keeps at most ``mjMAXCONPAIR`` contacts per colliding pair and
+            drops the rest silently. A flex and a geom are one pair, so every vertex also
+            collides as a sphere of its own, which keeps a large cloth from sinking in.
+
         :param cloth: The cloth sheet to build.
         """
         vertex_mass = cloth.mass / len(cloth.surface.vertices)
@@ -3324,6 +3377,19 @@ class MujocoBuilder(MultiSimBuilder):
                 vertex_body.add_joint(
                     type=mujoco.mjtJoint.mjJNT_SLIDE, axis=axis.to_np().tolist()[:3]
                 )
+            vertex_body.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[cloth.thickness / 2, 0.0, 0.0],
+                mass=0.0,
+                contype=MujocoClothVertexCollision.CONTACT_TYPE,
+                conaffinity=MujocoClothVertexCollision.CONTACT_AFFINITY,
+                group=GeomVisibilityAndCollisionType.ONLY_COLLIDABLE,
+                margin=self.cloth_vertex_contact.margin_to_radius_ratio
+                * cloth.thickness
+                / 2,
+                solref=self.cloth_vertex_contact.solver_reference,
+                solimp=self.cloth_vertex_contact.solver_impedance,
+            )
             vertex_body_names.append(vertex_body.name)
         flex = self.spec.add_flex()
         flex.name = cloth.name

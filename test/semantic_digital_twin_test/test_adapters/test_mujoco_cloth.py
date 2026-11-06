@@ -15,7 +15,11 @@ import trimesh
 from typing_extensions import Iterator
 
 from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix
-from semantic_digital_twin.adapters.multi_sim import MujocoBuilder, MujocoSim
+from semantic_digital_twin.adapters.multi_sim import (
+    MujocoBuilder,
+    MujocoClothVertexCollision,
+    MujocoSim,
+)
 from semantic_digital_twin.datastructures.prefixed_name import PrefixedName
 from semantic_digital_twin.world import World
 from semantic_digital_twin.world_description.cloth import ClothSheet, GarmentFile
@@ -211,6 +215,29 @@ def test_a_cloth_sheet_is_drawn_in_its_color(
     )
 
 
+def test_the_vertices_of_a_cloth_sheet_touch_with_the_builders_vertex_contact(
+    tmp_path: Path, triangle: trimesh.Trimesh
+) -> None:
+    """
+    The sphere of a vertex takes its margin and solver parameters from the builder.
+    """
+    cloth = ClothSheet(name="cloth", surface=triangle, mass=0.15)
+    contact = MujocoBuilder().cloth_vertex_contact
+
+    model = build_model_of(cloth, tmp_path)
+
+    spheres = model.body_geomadr[model.flex_vertbodyid[: len(cloth.surface.vertices)]]
+    assert model.geom_margin[spheres] == pytest.approx(
+        contact.margin_to_radius_ratio * cloth.thickness / 2
+    )
+    assert model.geom_solref[spheres[0]].tolist() == pytest.approx(
+        contact.solver_reference
+    )
+    assert model.geom_solimp[spheres[0]].tolist() == pytest.approx(
+        contact.solver_impedance
+    )
+
+
 def test_a_cloth_sheets_edges_are_damped_as_much_as_it_says(
     tmp_path: Path, triangle: trimesh.Trimesh
 ) -> None:
@@ -223,6 +250,38 @@ def test_a_cloth_sheets_edges_are_damped_as_much_as_it_says(
 
     flex_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_FLEX, cloth.name)
     assert model.flex_edgedamping[flex_id] == pytest.approx(cloth.edge_damping)
+
+
+def test_every_vertex_of_a_cloth_sheet_collides_with_a_sphere_of_its_own(
+    tmp_path: Path, triangle: trimesh.Trimesh
+) -> None:
+    """
+    Every vertex carries one massless sphere of the cloth's collision radius, which
+    collides with ordinary geoms and not with the spheres of other vertices.
+    """
+    cloth = ClothSheet(name="cloth", surface=triangle, mass=0.15)
+
+    model = build_model_of(cloth, tmp_path)
+
+    vertex_count = len(cloth.surface.vertices)
+    vertex_bodies = model.flex_vertbodyid[:vertex_count]
+    assert model.body_geomnum[vertex_bodies].tolist() == [1] * vertex_count
+    spheres = model.body_geomadr[vertex_bodies]
+    assert (
+        model.geom_type[spheres].tolist()
+        == [mujoco.mjtGeom.mjGEOM_SPHERE] * vertex_count
+    )
+    assert model.geom_size[spheres, 0] == pytest.approx(cloth.thickness / 2)
+    assert (
+        model.geom_contype[spheres] == MujocoClothVertexCollision.CONTACT_TYPE
+    ).all()
+    assert (
+        model.geom_conaffinity[spheres] == MujocoClothVertexCollision.CONTACT_AFFINITY
+    ).all()
+    assert (
+        MujocoClothVertexCollision.CONTACT_TYPE
+        & MujocoClothVertexCollision.CONTACT_AFFINITY
+    ) == 0
 
 
 # %% simulating
@@ -250,3 +309,26 @@ def test_a_t_shirt_dropped_onto_a_table_lands_on_it_and_keeps_its_extent(
     assert numpy.allclose(
         numpy.ptp(positions[:, :2], axis=0), t_shirt.surface.extents[:2], atol=2e-2
     )
+
+
+def test_a_t_shirt_dropped_onto_a_table_stays_out_of_its_surface(
+    t_shirt_above_table: TShirtAboveTable, simulation: MujocoSim
+) -> None:
+    """
+    No vertex passes below the table top while the T-shirt lands, and once it has
+    settled its shell reaches into the table by no more than a tenth of the collision
+    radius.
+    """
+    t_shirt = t_shirt_above_table.t_shirt
+    radius = t_shirt.thickness / 2
+    tolerated_depth = radius / 10
+
+    for _ in range(30):
+        simulation.step_simulation(timedelta(milliseconds=100))
+        positions = simulation.simulator.get_flex_vertex_positions(
+            flex_name=t_shirt.name
+        ).result
+        height_above_table = positions[:, 2] - t_shirt_above_table.table_top_height
+        assert height_above_table.min() > 0
+
+    assert height_above_table.min() - radius > -tolerated_depth
