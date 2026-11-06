@@ -8,7 +8,7 @@ world's kinematic structure holds no cloth.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
+from functools import cached_property
 from importlib.resources import files
 from pathlib import Path
 
@@ -17,21 +17,7 @@ import trimesh
 from krrood.patterns.path_enumeration import PathEnumeration
 from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix
 from semantic_digital_twin.mixin import SimulatorAdditionalProperty
-from semantic_digital_twin.world_description.geometry import Color
-
-# %% fabrics
-
-
-class Fabric(StrEnum):
-    """
-    The kinds of cloth an object can be made of.
-    """
-
-    COTTON = "cotton"
-    """
-    Cloth made from cotton fibres.
-    """
-
+from semantic_digital_twin.world_description.geometry import Color, Mesh
 
 # %% cloth sheets
 
@@ -55,6 +41,52 @@ class ClothElasticity:
 
 
 @dataclass
+class Fabric:
+    """
+    A kind of cloth, with the physical values a simulation of it depends on.
+    """
+
+    elasticity: ClothElasticity
+    """
+    How stiffly the fabric resists bending.
+    """
+
+    thickness: float
+    """
+    Thickness of the fabric, in metres, which its bending stiffness grows with.
+    """
+
+    edge_damping: float
+    """
+    How strongly the edges of a sheet of the fabric damp their stretching.
+    """
+
+
+@dataclass
+class Cotton(Fabric):
+    """
+    Cotton, with the values RGBench states for its T-shirt.
+    """
+
+    elasticity: ClothElasticity = field(
+        default_factory=lambda: ClothElasticity(young_modulus=2.3e5, poisson_ratio=0.35)
+    )
+    """
+    How stiffly cotton resists bending.
+    """
+
+    thickness: float = 3e-3
+    """
+    Thickness of cotton, in metres.
+    """
+
+    edge_damping: float = 0.1
+    """
+    How strongly the edges of a sheet of cotton damp their stretching.
+    """
+
+
+@dataclass
 class ClothSheet(SimulatorAdditionalProperty):
     """
     A piece of cloth a physical simulation deforms: a sheet of triangles whose edges keep
@@ -66,10 +98,10 @@ class ClothSheet(SimulatorAdditionalProperty):
     The name the simulation knows the cloth by.
     """
 
-    surface: trimesh.Trimesh
+    surface: Mesh
     """
-    The cloth's triangles as they lie when the simulation starts, with their vertices in
-    the world frame.
+    The cloth's triangles, whose origin places them in the world frame when the
+    simulation starts.
     """
 
     mass: float
@@ -77,9 +109,9 @@ class ClothSheet(SimulatorAdditionalProperty):
     Mass of the whole cloth, in kilograms.
     """
 
-    thickness: float = 8e-3
+    fabric: Fabric = field(default_factory=Cotton)
     """
-    Thickness of the cloth, in metres, which its bending stiffness grows with.
+    The kind of cloth the sheet is made of.
     """
 
     collision_radius: float = 5e-4
@@ -87,20 +119,20 @@ class ClothSheet(SimulatorAdditionalProperty):
     How far from its surface the cloth touches what it collides with, in metres.
     """
 
-    elasticity: ClothElasticity = field(default_factory=ClothElasticity)
-    """
-    How stiffly the cloth resists bending.
-    """
-
-    edge_damping: float = 0.0
-    """
-    How strongly the cloth's edges damp the speed at which they stretch and shrink.
-    """
-
     color: Color = field(default_factory=Color)
     """
     The color the cloth is drawn in.
     """
+
+    @cached_property
+    def starting_surface(self) -> trimesh.Trimesh:
+        """
+        :return: The cloth's triangles as they lie when the simulation starts, with their
+            vertices in the world frame and its panels sewn together at their seams.
+        """
+        surface = self.surface.mesh.copy()
+        surface.merge_vertices(merge_tex=True, merge_norm=True)
+        return surface.apply_transform(self.surface.origin.to_np())
 
 
 # %% garments
@@ -126,14 +158,9 @@ class GarmentFile(PathEnumeration):
     ``t_shirt_ATTRIBUTION.md`` next to it.
     """
 
-    def create_surface(
-        self, world_T_garment: HomogeneousTransformationMatrix
-    ) -> trimesh.Trimesh:
+    def create_surface(self, world_T_garment: HomogeneousTransformationMatrix) -> Mesh:
         """
         :param world_T_garment: Where the garment lies.
-        :return: The garment as one sheet of triangles, with its vertices in the world
-            frame.
+        :return: The garment as one sheet of triangles, placed in the world frame.
         """
-        return trimesh.load(str(self), force="mesh", process=False).apply_transform(
-            world_T_garment.to_np()
-        )
+        return Mesh(filename=str(self), origin=world_T_garment)

@@ -51,7 +51,8 @@ from semantic_digital_twin.specifications.robots import RobotSpecification
 from semantic_digital_twin.specifications.worlds import WorldSpecification
 from semantic_digital_twin.world import World
 from semantic_digital_twin.world_description.cloth import (
-    ClothElasticity,
+    Cotton,
+    Fabric,
     ClothSheet,
     GarmentFile,
 )
@@ -123,21 +124,14 @@ class TShirtSwingDemonstration(RobotDemonstration):
     The mass of the T-shirt, in kilograms, as RGBench states it.
     """
 
-    t_shirt_thickness: float = 3e-3
+    t_shirt_garment: GarmentFile = GarmentFile.T_SHIRT
     """
-    The thickness of the T-shirt's fabric, in metres, as RGBench states it.
-    """
-
-    t_shirt_elasticity: ClothElasticity = field(
-        default_factory=lambda: ClothElasticity(young_modulus=2.3e5, poisson_ratio=0.35)
-    )
-    """
-    How stiffly the T-shirt resists bending, as RGBench states it.
+    The mesh the T-shirt is made from.
     """
 
-    t_shirt_edge_damping: float = 0.1
+    t_shirt_fabric: Fabric = field(default_factory=Cotton)
     """
-    How strongly the T-shirt's edges damp their stretching, as RGBench states it.
+    The kind of cloth the T-shirt is made of.
     """
 
     t_shirt_color: Color = field(
@@ -246,11 +240,9 @@ class TShirtSwingDemonstration(RobotDemonstration):
         world.add_simulator_property(
             ClothSheet(
                 name=SceneEntity.T_SHIRT,
-                surface=GarmentFile.T_SHIRT.create_surface(self._world_T_t_shirt),
+                surface=self.t_shirt_garment.create_surface(self._world_T_t_shirt),
                 mass=self.t_shirt_mass,
-                thickness=self.t_shirt_thickness,
-                elasticity=self.t_shirt_elasticity,
-                edge_damping=self.t_shirt_edge_damping,
+                fabric=self.t_shirt_fabric,
                 color=self.t_shirt_color,
             )
         )
@@ -345,7 +337,7 @@ class TShirtSwingDemonstration(RobotDemonstration):
                         arm,
                     ),
                     MoveFingersToWidthAction(
-                        gripper=gripper, width=self.t_shirt_thickness
+                        gripper=gripper, width=self.t_shirt_fabric.thickness
                     ),
                     CountSimulationTimeSeconds(seconds=self.closing_duration),
                     FunctionCall(
@@ -381,9 +373,11 @@ class TShirtSwingDemonstration(RobotDemonstration):
         """
         world_P_shoulder = self._world_T_t_shirt @ self.t_shirt_P_left_shoulder
         [t_shirt] = world.get_simulator_properties_of_type(ClothSheet)
-        _, [closest] = t_shirt.surface.nearest.vertex([world_P_shoulder.to_np()[:3]])
+        _, [closest] = t_shirt.starting_surface.nearest.vertex(
+            [world_P_shoulder.to_np()[:3]]
+        )
         return Pose.from_xyz_rpy(
-            *t_shirt.surface.vertices[closest], reference_frame=world.root
+            *t_shirt.starting_surface.vertices[closest], reference_frame=world.root
         )
 
     @staticmethod

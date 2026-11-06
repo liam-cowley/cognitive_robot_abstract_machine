@@ -19,7 +19,11 @@ from semantic_digital_twin.semantic_annotations.mixins import (
 )
 from semantic_digital_twin.semantic_annotations.semantic_annotations import TShirt
 from semantic_digital_twin.world import World
-from semantic_digital_twin.world_description.cloth import Fabric
+from semantic_digital_twin.world_description.cloth import (
+    ClothElasticity,
+    Cotton,
+    Fabric,
+)
 
 # %% fixtures
 
@@ -48,7 +52,27 @@ def test_a_t_shirt_is_made_of_cotton(t_shirt: TShirt) -> None:
     """
     A T-shirt is made of cotton unless stated otherwise.
     """
-    assert t_shirt.fabric is Fabric.COTTON
+    assert type(t_shirt.fabric) is Cotton
+
+
+def test_a_t_shirt_can_be_made_of_another_fabric() -> None:
+    """
+    A T-shirt carries the fabric it is given, with that fabric's own values.
+    """
+    fabric = Fabric(
+        elasticity=ClothElasticity(young_modulus=1e4),
+        thickness=1e-3,
+        edge_damping=0.5,
+    )
+    world = World.create_with_root_body("root")
+    with world.modify_world():
+        t_shirt = TShirt.get_annotation_specification(
+            "t_shirt",
+            TShirt.get_default_root_kinematic_structure_entity_specification(),
+            annotation_kwargs={"fabric": fabric},
+        ).spawn(world)
+
+    assert t_shirt.fabric == fabric
 
 
 # %% perception
@@ -84,7 +108,7 @@ def test_a_t_shirt_keeps_its_fabric_after_a_database_roundtrip(
         session.expunge_all()
         restored = session.scalar(select(type(stored_t_shirt))).from_dao()
 
-    assert restored.fabric is t_shirt.fabric
+    assert restored.fabric == t_shirt.fabric
 
 
 def test_a_t_shirt_keeps_its_fabric_after_a_json_roundtrip(t_shirt: TShirt) -> None:
@@ -97,4 +121,4 @@ def test_a_t_shirt_keeps_its_fabric_after_a_json_roundtrip(t_shirt: TShirt) -> N
 
     restored = TShirt.from_json(serialized, **tracker.create_kwargs())
 
-    assert restored.fabric is t_shirt.fabric
+    assert restored.fabric == t_shirt.fabric

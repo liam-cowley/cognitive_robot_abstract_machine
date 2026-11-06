@@ -31,7 +31,7 @@ def test_the_t_shirt_lies_spread_out_on_the_table() -> None:
     world = demonstration.build_simulated_world()
 
     [t_shirt] = world.get_simulator_properties_of_type(ClothSheet)
-    vertices = t_shirt.surface.vertices
+    vertices = t_shirt.starting_surface.vertices
 
     table = demonstration.table_scale
     assert vertices[:, 0].min() >= demonstration.table_distance

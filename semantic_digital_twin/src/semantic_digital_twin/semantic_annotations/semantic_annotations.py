@@ -64,7 +64,7 @@ from krrood_spatial_math.spatial_types import (
     Vector3,
 )
 from krrood_spatial_math.spatial_types import Pose, RotationMatrix
-from semantic_digital_twin.world_description.cloth import Fabric
+from semantic_digital_twin.world_description.cloth import Cotton, Fabric
 from semantic_digital_twin.world_description.connections import (
     FixedConnection,
 )
@@ -2027,7 +2027,7 @@ class TShirt(IsNonRigid, IsPerceivable):
     A T-shirt.
     """
 
-    fabric: Fabric = field(default=Fabric.COTTON, kw_only=True)
+    fabric: Fabric = field(default_factory=Cotton, hash=False, kw_only=True)
     """
     The kind of cloth the T-shirt is made of.
     """
