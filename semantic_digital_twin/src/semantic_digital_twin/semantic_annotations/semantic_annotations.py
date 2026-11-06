@@ -39,6 +39,7 @@ from semantic_digital_twin.semantic_annotations.mixins import (
     HasCaseAsRootBody,
     HasMovableJoint,
     HasApertures,
+    IsNonRigid,
     IsPerceivable,
     HasRootBody,
     IsStorageSpace,
@@ -63,6 +64,7 @@ from krrood_spatial_math.spatial_types import (
     Vector3,
 )
 from krrood_spatial_math.spatial_types import Pose, RotationMatrix
+from semantic_digital_twin.world_description.cloth import Fabric
 from semantic_digital_twin.world_description.connections import (
     FixedConnection,
 )
@@ -2014,3 +2016,18 @@ class CoffeeMachine(HasRootBody):
     """
 
     _synonyms = {"coffe"}
+
+
+# %% garments
+
+
+@dataclass(eq=False)
+class TShirt(IsNonRigid, IsPerceivable):
+    """
+    A T-shirt.
+    """
+
+    fabric: Fabric = field(default=Fabric.COTTON, kw_only=True)
+    """
+    The kind of cloth the T-shirt is made of.
+    """

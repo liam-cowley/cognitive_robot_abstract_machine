@@ -8,6 +8,7 @@ world's kinematic structure holds no cloth.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from importlib.resources import files
 from pathlib import Path
 
@@ -17,6 +18,20 @@ from krrood.patterns.path_enumeration import PathEnumeration
 from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix
 from semantic_digital_twin.mixin import SimulatorAdditionalProperty
 from semantic_digital_twin.world_description.geometry import Color
+
+# %% fabrics
+
+
+class Fabric(StrEnum):
+    """
+    The kinds of cloth an object can be made of.
+    """
+
+    COTTON = "cotton"
+    """
+    Cloth made from cotton fibres.
+    """
+
 
 # %% cloth sheets
 

@@ -401,6 +401,16 @@ class HasRootBody(HasRootKinematicStructureEntity[Body], Mixin):
 
 
 @dataclass(eq=False)
+class IsNonRigid(HasRootBody, Mixin):
+    """
+    A mixin class for semantic annotations whose shape changes when forces act on them.
+
+    The root body locates the object; its geometry does not describe the object's
+    current shape.
+    """
+
+
+@dataclass(eq=False)
 class HasGraspCandidates(HasRootBody, Mixin):
     """
     A mixin class for semantic annotations that state where they may be grasped, in
