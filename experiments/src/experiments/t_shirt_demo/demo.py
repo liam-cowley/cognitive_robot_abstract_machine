@@ -101,7 +101,7 @@ class TShirtSwingDemonstration(RobotDemonstration):
     Performs the plan in physics, since the T-shirt exists only there.
     """
 
-    table_distance: float = 0.45
+    table_distance: float = 0.6
     """
     How far in front of the robot's base the near edge of the table stands, in metres.
     """
