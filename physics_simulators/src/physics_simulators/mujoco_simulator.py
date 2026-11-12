@@ -540,6 +540,60 @@ class MujocoSimulator(BaseSimulator):
         )
 
     @BaseSimulator.simulator_callback
+    def unpin_flex_vertices(
+        self, flex_name: str, body_name: str
+    ) -> SimulatorCallbackResult:
+        """
+        Unpin every vertex of a flex that :meth:`pin_flex_vertices` pinned to a body, so
+        the vertices move freely again, as if let go of.
+
+        :param flex_name: The name of the flex
+        :param body_name: The name of the body
+        :return: A SimulatorCallbackResult with the indices, within the flex, of the
+            unpinned vertices as the result
+        """
+        flex_id = mujoco.mj_name2id(
+            m=self._mj_model, type=mujoco.mjtObj.mjOBJ_FLEX, name=flex_name
+        )
+        body_id = mujoco.mj_name2id(
+            m=self._mj_model, type=mujoco.mjtObj.mjOBJ_BODY, name=body_name
+        )
+        if flex_id == -1 or body_id == -1:
+            return SimulatorCallbackResult(
+                type=SimulatorCallbackResult.ResultType.FAILURE_WITHOUT_EXECUTION,
+                info=f"Flex {flex_name} or body {body_name} not found",
+            )
+        vertex_of_body_name = {
+            self._mj_model.body(vertex_body_id).name: vertex
+            for vertex, vertex_body_id in enumerate(
+                self._mj_model.flex_vertbodyid[self._flex_vertices(flex_id)]
+            )
+        }
+        pins = [
+            equality
+            for equality in self._mj_spec.equalities
+            if equality.type == mujoco.mjtEq.mjEQ_WELD
+            and equality.name1 == body_name
+            and equality.name2 in vertex_of_body_name
+        ]
+        if not pins:
+            return SimulatorCallbackResult(
+                type=SimulatorCallbackResult.ResultType.FAILURE_WITHOUT_EXECUTION,
+                info=f"No vertex of flex {flex_name} is pinned to {body_name}",
+            )
+        unpinned = numpy.array(
+            sorted(vertex_of_body_name[equality.name2] for equality in pins)
+        )
+        for equality in pins:
+            self._mj_spec.delete(equality)
+        self._recompile()
+        return SimulatorCallbackResult(
+            type=SimulatorCallbackResult.ResultType.SUCCESS_AFTER_EXECUTION_ON_MODEL,
+            info=f"Unpinned {unpinned.size} vertices of flex {flex_name} from {body_name}",
+            result=unpinned,
+        )
+
+    @BaseSimulator.simulator_callback
     def get_geom_friction(self, geom_name: str) -> SimulatorCallbackResult:
         """
         Get a geom's contact friction (sliding, torsional, rolling) by its name.
