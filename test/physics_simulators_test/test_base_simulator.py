@@ -274,3 +274,76 @@ class TestBaseSimulator:
         assert f"Function {function_2.__name__} is already defined" in str(
             exc_info.value
         )
+
+
+# %% class-level callbacks per simulator class
+
+
+def _callback_returning_class_name(
+    physics_simulator: BaseSimulator,
+) -> SimulatorCallbackResult:
+    return SimulatorCallbackResult(
+        type=SimulatorCallbackResult.ResultType.SUCCESS_WITHOUT_EXECUTION,
+        result=type(physics_simulator).__name__,
+    )
+
+
+class TestClassLevelCallbacksPerSimulatorClass:
+    """
+    Two simulator backends declare class-level callbacks with the same name.
+    """
+
+    def test_sibling_classes_register_callbacks_of_the_same_name(self):
+        class FirstBackend(BaseSimulator):
+            @BaseSimulator.simulator_callback
+            def get_backend_name(self) -> SimulatorCallbackResult:
+                return _callback_returning_class_name(self)
+
+        class SecondBackend(BaseSimulator):
+            @BaseSimulator.simulator_callback
+            def get_backend_name(self) -> SimulatorCallbackResult:
+                return _callback_returning_class_name(self)
+
+        assert FirstBackend(True).callbacks["get_backend_name"]().result == (
+            FirstBackend.__name__
+        )
+        assert SecondBackend(True).callbacks["get_backend_name"]().result == (
+            SecondBackend.__name__
+        )
+
+    def test_sibling_class_callbacks_stay_out_of_each_other(self):
+        class BackendWithCallback(BaseSimulator):
+            @BaseSimulator.simulator_callback
+            def get_only_here(self) -> SimulatorCallbackResult:
+                return _callback_returning_class_name(self)
+
+        class BackendWithoutCallback(BaseSimulator): ...
+
+        assert "get_only_here" in BackendWithCallback(True).callbacks
+        assert "get_only_here" not in BackendWithoutCallback(True).callbacks
+        assert "get_only_here" not in BaseSimulator(True).callbacks
+
+    def test_subclass_inherits_and_overrides_callbacks(self):
+        class ParentBackend(BaseSimulator):
+            @BaseSimulator.simulator_callback
+            def get_inherited(self) -> SimulatorCallbackResult:
+                return _callback_returning_class_name(self)
+
+            @BaseSimulator.simulator_callback
+            def get_overridden(self) -> SimulatorCallbackResult:
+                return _callback_returning_class_name(self)
+
+        class ChildBackend(ParentBackend):
+            @BaseSimulator.simulator_callback
+            def get_overridden(self) -> SimulatorCallbackResult:
+                return SimulatorCallbackResult(
+                    type=SimulatorCallbackResult.ResultType.SUCCESS_WITHOUT_EXECUTION,
+                    result=ChildBackend.get_overridden.__qualname__,
+                )
+
+        child = ChildBackend(True)
+        assert child.callbacks["get_inherited"]().result == ChildBackend.__name__
+        assert (
+            child.callbacks["get_overridden"]().result
+            == ChildBackend.get_overridden.__qualname__
+        )

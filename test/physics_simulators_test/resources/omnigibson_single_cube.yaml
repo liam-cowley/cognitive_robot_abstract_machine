@@ -1,0 +1,11 @@
+# An empty OmniGibson scene with one free cube; needs no BEHAVIOR-1K dataset assets.
+scene:
+  type: Scene
+objects:
+  - type: PrimitiveObject
+    name: cube
+    primitive_type: Cube
+    scale: [0.1, 0.1, 0.1]
+    position: [0.5, -0.2, 1.0]
+    orientation: [0.0, 0.0, 0.0, 1.0]
+robots: []

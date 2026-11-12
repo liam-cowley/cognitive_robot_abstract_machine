@@ -213,7 +213,14 @@ class BaseSimulator:
 
     class_level_callbacks: ClassVar[list[SimulatorCallback]] = []
     """
-    Class level callback functions.
+    Callbacks this class declares itself; subclasses inherit them through
+    :attr:`callbacks`, not through this list.
+    """
+
+    _callbacks_awaiting_class: ClassVar[list[Callable]] = []
+    """
+    Functions marked with :meth:`simulator_callback` whose class body is still being
+    executed, shared so :meth:`__init_subclass__` can claim them for that class.
     """
 
     instance_level_callbacks: list[SimulatorCallback] = field(
@@ -269,12 +276,41 @@ class BaseSimulator:
             self.add_instance_callback(func)
         atexit.register(self.stop)
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """
+        Give the new class its own :attr:`class_level_callbacks`, holding the functions
+        its body marked with :meth:`simulator_callback`.
+        """
+        super().__init_subclass__(**kwargs)
+        own_members = list(vars(cls).values())
+        own_functions = [
+            function
+            for function in BaseSimulator._callbacks_awaiting_class
+            if any(function is member for member in own_members)
+        ]
+        for function in own_functions:
+            BaseSimulator._callbacks_awaiting_class.remove(function)
+        cls.class_level_callbacks = [
+            SimulatorCallback(function) for function in own_functions
+        ]
+
     @property
-    def callbacks(self):
+    def callbacks(self) -> dict[str, partial]:
+        """
+        The callbacks of this simulator bound to it, by name.
+
+        A class-level callback overrides one of the same name from a base class, and an
+        instance-level callback overrides both.
+        """
+        class_level_callbacks = [
+            callback
+            for simulator_class in reversed(type(self).__mro__)
+            for callback in vars(simulator_class).get("class_level_callbacks", [])
+        ]
         return {
             callback.__name__: partial(callback, self)
             for callback in [
-                *self.class_level_callbacks,
+                *class_level_callbacks,
                 *self.instance_level_callbacks,
             ]
         }
@@ -610,6 +646,12 @@ class BaseSimulator:
         cls.add_callback(callback, cls.class_level_callbacks)
 
     @classmethod
-    def simulator_callback(cls, callback):
-        cls.add_class_callback(callback)
+    def simulator_callback(cls, callback: Callable) -> Callable:
+        """
+        Mark a method in a simulator class body as a class-level callback of that class.
+
+        :param callback: The method to mark
+        :return: The method, unchanged
+        """
+        BaseSimulator._callbacks_awaiting_class.append(callback)
         return callback
