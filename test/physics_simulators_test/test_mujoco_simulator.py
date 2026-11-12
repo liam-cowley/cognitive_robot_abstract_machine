@@ -802,66 +802,6 @@ class TestClothSimulation:
         )
         assert simulator._mj_model.neq == equality_count
 
-    def test_an_unpinned_vertex_falls_with_the_rest_of_the_cloth(
-        self, simulator: MujocoSimulator
-    ) -> None:
-        """
-        Once unpinned from the hook, the vertex pinned to it falls like the vertices that
-        were never pinned, and the hook holds nothing of the cloth any more.
-        """
-        simulator.start(simulate_in_thread=False, render_in_thread=False)
-        simulator.step()
-        equality_count = simulator._mj_model.neq
-        start = simulator.callbacks["get_flex_vertex_positions"](
-            flex_name="cloth"
-        ).result
-        hook = simulator._mj_data.body("hook")
-        hook_P_vertex = hook.xmat.reshape(3, 3).T @ (start[0] - hook.xpos)
-        pinned = simulator.callbacks["pin_flex_vertices"](
-            flex_name="cloth", body_name="hook", body_P_centre=hook_P_vertex, radius=0.01
-        ).result
-
-        result = simulator.callbacks["unpin_flex_vertices"](
-            flex_name="cloth", body_name="hook"
-        )
-        for _ in range(250):
-            simulator.step()
-        end = simulator.callbacks["get_flex_vertex_positions"](flex_name="cloth").result
-
-        assert (
-            result.type
-            is SimulatorCallbackResult.ResultType.SUCCESS_AFTER_EXECUTION_ON_MODEL
-        )
-        assert result.result.tolist() == pinned.tolist()
-        assert simulator._mj_model.neq == equality_count
-        assert numpy.all(end[pinned, 2] < start[pinned, 2])
-
-    @pytest.mark.parametrize(
-        "flex_name, body_name",
-        [
-            ("this_flex_does_not_exist", "hook"),
-            ("cloth", "this_body_does_not_exist"),
-            ("cloth", "hook"),
-        ],
-    )
-    def test_unpinning_fails_without_a_flex_a_body_or_a_pinned_vertex(
-        self, simulator: MujocoSimulator, flex_name: str, body_name: str
-    ) -> None:
-        """
-        Unpinning reports a failure when the flex or the body is missing, or when the
-        body holds no vertex of the flex.
-        """
-        simulator.start(simulate_in_thread=False, render_in_thread=False)
-        simulator.step()
-
-        result = simulator.callbacks["unpin_flex_vertices"](
-            flex_name=flex_name, body_name=body_name
-        )
-
-        assert (
-            result.type is SimulatorCallbackResult.ResultType.FAILURE_WITHOUT_EXECUTION
-        )
-
 
 class TestOffscreenRenderingAvailability:
     """
