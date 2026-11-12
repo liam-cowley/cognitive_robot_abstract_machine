@@ -6,6 +6,7 @@ from __future__ import annotations
 
 # %% Imports
 from dataclasses import dataclass
+
 from robokudo.exceptions import RoboKudoError
 
 
@@ -94,3 +95,43 @@ class NotAPoseModelException(RoboKudoError, ValueError):
 
     def suggest_correction(self) -> str:
         return "set 'pretrained_model' to a YOLO pose model, e.g. 'yolov8n-pose.pt'."
+
+
+# %% Cloth unfolding
+@dataclass
+class ClothMaskMissing(RoboKudoError, ValueError):
+    """
+    A detected cloth has no mask to outline it by.
+    """
+
+    annotator_name: str
+    """
+    Name of the annotator that detected the cloth.
+    """
+
+    def error_message(self) -> str:
+        return f"{self.annotator_name} detected a cloth without segmenting it."
+
+    def suggest_correction(self) -> str:
+        return f"enable 'precision_mode' of {self.annotator_name}."
+
+
+@dataclass
+class TShirtNotUnique(RoboKudoError, LookupError):
+    """
+    The world does not hold exactly one T-shirt for perception to report about.
+    """
+
+    t_shirt_count: int
+    """
+    How many T-shirts the world holds.
+    """
+
+    def error_message(self) -> str:
+        return (
+            f"The world holds {self.t_shirt_count} T-shirts, so it is unclear which "
+            f"one perception sees."
+        )
+
+    def suggest_correction(self) -> str:
+        return "add exactly one T-shirt to the world before running the pipeline."

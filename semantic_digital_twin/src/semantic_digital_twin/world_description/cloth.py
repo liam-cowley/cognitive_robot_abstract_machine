@@ -15,7 +15,7 @@ from pathlib import Path
 import trimesh
 
 from krrood.patterns.path_enumeration import PathEnumeration
-from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix
+from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix, Point3
 from semantic_digital_twin.mixin import SimulatorAdditionalProperty
 from semantic_digital_twin.world_description.geometry import Color, Mesh
 
@@ -164,3 +164,42 @@ class GarmentFile(PathEnumeration):
         :return: The garment as one sheet of triangles, placed in the world frame.
         """
         return Mesh(filename=str(self), origin=world_T_garment)
+
+
+# %% unfolding
+
+
+@dataclass
+class ClothGraspPoints:
+    """
+    The two points a pair of grippers takes a crumpled cloth by to lift it and shake it
+    out, as perception last found them.
+    """
+
+    left_grasp_point: Point3
+    """
+    The grasp point on the left of the cloth, as the camera sees it.
+    """
+
+    right_grasp_point: Point3
+    """
+    The grasp point on the right of the cloth, as the camera sees it.
+    """
+
+
+@dataclass
+class ClothFold:
+    """
+    A fold in a cloth lying on a surface, and where to lay its folded-over part to
+    unfold it, as perception last found them.
+    """
+
+    fold_point: Point3
+    """
+    The middle of the folded-over part of the cloth, where a gripper takes it.
+    """
+
+    unfold_target: Point3
+    """
+    Where the gripper lays the folded-over part down so that the cloth lies flat.
+    """

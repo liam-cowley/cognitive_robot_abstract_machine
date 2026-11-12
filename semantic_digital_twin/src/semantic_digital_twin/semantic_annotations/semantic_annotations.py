@@ -63,6 +63,8 @@ from krrood_spatial_math.spatial_types import (
 )
 from krrood_spatial_math.spatial_types import Pose, RotationMatrix
 from semantic_digital_twin.world_description.cloth import (
+    ClothFold,
+    ClothGraspPoints,
     ClothSheet,
     Cotton,
     Fabric,
@@ -1937,6 +1939,38 @@ class TShirt(IsNonRigid, IsPerceivable):
     """
     The kind of cloth the T-shirt is made of.
     """
+
+    grasp_points: ClothGraspPoints | None = field(
+        default=None, hash=False, kw_only=True
+    )
+    """
+    Where to take the T-shirt to lift it and shake it out, or ``None`` if perception has
+    not found them.
+    """
+
+    fold: ClothFold | None = field(default=None, hash=False, kw_only=True)
+    """
+    The fold in the T-shirt lying on a surface, or ``None`` if perception found it lying
+    flat or has not looked.
+    """
+
+    @synchronized_attribute_modification
+    def update_grasp_points(self, grasp_points: ClothGraspPoints | None) -> None:
+        """
+        Record where perception last found the points to take the T-shirt by.
+
+        :param grasp_points: The grasp points, or ``None`` if perception found none.
+        """
+        self.grasp_points = grasp_points
+
+    @synchronized_attribute_modification
+    def update_fold(self, fold: ClothFold | None) -> None:
+        """
+        Record the fold perception last found in the T-shirt.
+
+        :param fold: The fold, or ``None`` if the T-shirt lies flat.
+        """
+        self.fold = fold
 
     @synchronized_attribute_modification
     def add_cloth_sheet(

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from krrood.ormatic.data_access_objects.helper import to_dao
-from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix
+from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix, Point3
 from semantic_digital_twin.adapters.world_entity_kwargs_tracker import (
     WorldEntityWithIDKwargsTracker,
 )
@@ -23,12 +23,36 @@ from semantic_digital_twin.semantic_annotations.semantic_annotations import TShi
 from semantic_digital_twin.world import World
 from semantic_digital_twin.world_description.cloth import (
     ClothElasticity,
+    ClothFold,
+    ClothGraspPoints,
     Cotton,
     Fabric,
     GarmentFile,
 )
 
 # %% fixtures
+
+
+@pytest.fixture
+def fold(t_shirt: TShirt) -> ClothFold:
+    """
+    :return: A fold in the T-shirt, in its world's frame.
+    """
+    return ClothFold(
+        fold_point=Point3(0.4, 0.1, 0.75, reference_frame=t_shirt._world.root),
+        unfold_target=Point3(0.4, 0.3, 0.73, reference_frame=t_shirt._world.root),
+    )
+
+
+@pytest.fixture
+def grasp_points(t_shirt: TShirt) -> ClothGraspPoints:
+    """
+    :return: Two points to take the T-shirt by, in its world's frame.
+    """
+    return ClothGraspPoints(
+        left_grasp_point=Point3(0.5, 0.2, 0.74, reference_frame=t_shirt._world.root),
+        right_grasp_point=Point3(0.5, -0.2, 0.74, reference_frame=t_shirt._world.root),
+    )
 
 
 @pytest.fixture
@@ -194,3 +218,107 @@ def test_a_t_shirt_keeps_its_cloth_sheet_after_a_database_roundtrip(
 
     assert restored.cloth_sheet.mass == t_shirt.cloth_sheet.mass
     assert restored.cloth_sheet.fabric == t_shirt.cloth_sheet.fabric
+
+
+# %% unfolding
+
+
+def test_a_t_shirt_has_no_grasp_points_or_fold_until_perceived(t_shirt: TShirt) -> None:
+    """
+    Nothing is known about how to unfold a T-shirt perception has not looked at.
+    """
+    assert t_shirt.grasp_points is None
+    assert t_shirt.fold is None
+
+
+def test_a_t_shirt_records_the_grasp_points_perception_found(
+    t_shirt: TShirt, grasp_points: ClothGraspPoints
+) -> None:
+    """
+    The grasp points perception reports are recorded on the T-shirt.
+    """
+    with t_shirt._world.modify_world():
+        t_shirt.update_grasp_points(grasp_points)
+
+    assert t_shirt.grasp_points is grasp_points
+
+
+def test_a_t_shirt_records_the_fold_perception_found(
+    t_shirt: TShirt, fold: ClothFold
+) -> None:
+    """
+    The fold perception reports is recorded on the T-shirt.
+    """
+    with t_shirt._world.modify_world():
+        t_shirt.update_fold(fold)
+
+    assert t_shirt.fold is fold
+
+
+def test_a_t_shirt_forgets_its_fold_once_it_lies_flat(
+    t_shirt: TShirt, fold: ClothFold
+) -> None:
+    """
+    Perception reporting no fold clears the one recorded before.
+    """
+    with t_shirt._world.modify_world():
+        t_shirt.update_fold(fold)
+        t_shirt.update_fold(None)
+
+    assert t_shirt.fold is None
+
+
+def test_a_t_shirt_keeps_its_unfolding_state_after_a_json_roundtrip(
+    t_shirt: TShirt, grasp_points: ClothGraspPoints, fold: ClothFold
+) -> None:
+    """
+    The grasp points and the fold travel with the T-shirt when it is serialized, as
+    worlds do to synchronize.
+    """
+    with t_shirt._world.modify_world():
+        t_shirt.update_grasp_points(grasp_points)
+        t_shirt.update_fold(fold)
+    serialized = t_shirt.to_json()
+    tracker = WorldEntityWithIDKwargsTracker.from_world(t_shirt._world)
+
+    restored = TShirt.from_json(serialized, **tracker.create_kwargs())
+
+    assert numpy.allclose(
+        restored.grasp_points.left_grasp_point.to_np(),
+        grasp_points.left_grasp_point.to_np(),
+    )
+    assert numpy.allclose(
+        restored.grasp_points.right_grasp_point.to_np(),
+        grasp_points.right_grasp_point.to_np(),
+    )
+    assert numpy.allclose(restored.fold.fold_point.to_np(), fold.fold_point.to_np())
+    assert numpy.allclose(
+        restored.fold.unfold_target.to_np(), fold.unfold_target.to_np()
+    )
+
+
+def test_a_t_shirt_keeps_its_unfolding_state_after_a_database_roundtrip(
+    t_shirt: TShirt,
+    grasp_points: ClothGraspPoints,
+    fold: ClothFold,
+    in_memory_session_maker: sessionmaker[Session],
+) -> None:
+    """
+    The grasp points and the fold are stored with the T-shirt and restored from the
+    database.
+    """
+    with t_shirt._world.modify_world():
+        t_shirt.update_grasp_points(grasp_points)
+        t_shirt.update_fold(fold)
+    stored_t_shirt = to_dao(t_shirt)
+    with in_memory_session_maker() as session:
+        session.add(stored_t_shirt)
+        session.commit()
+        session.expunge_all()
+        restored = session.scalar(select(type(stored_t_shirt))).from_dao()
+
+    assert numpy.allclose(
+        restored.grasp_points.left_grasp_point.to_np(),
+        grasp_points.left_grasp_point.to_np(),
+    )
+    assert numpy.allclose(restored.fold.fold_point.to_np(), fold.fold_point.to_np())
