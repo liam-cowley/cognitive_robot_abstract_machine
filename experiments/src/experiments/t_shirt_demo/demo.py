@@ -1,6 +1,7 @@
 """
-A Tiago picks a T-shirt up off a table by its shoulder and swings it from side to side,
-simulated in MuJoCo, to show how the cloth behaves.
+Robots handling a T-shirt on a table, simulated in MuJoCo, to show how the cloth
+behaves; here a Tiago picks it up off the table by its shoulder and swings it from side
+to side.
 
 Run it as a script::
     python3 -m experiments.t_shirt_demo.demo
@@ -8,6 +9,8 @@ Run it as a script::
 
 from __future__ import annotations
 
+import itertools
+from abc import abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
@@ -74,26 +77,11 @@ class SceneEntity(StrEnum):
     T_SHIRT = "t_shirt"
 
 
-# %% the demonstration
-
-
 @dataclass
-class TShirtSwingDemonstration(RobotDemonstration):
+class TShirtOnTableDemonstration(RobotDemonstration):
     """
-    The Tiago takes the T-shirt lying spread out on the table in front of it by the
-    shoulder, turns away from the table to pull it off, and swings it from side to side.
-
-    The gripper holds the T-shirt by pinning the vertices between its fingertips to it.
-    """
-
-    used_robot: type[AbstractRobot] = TiagoMujoco
-    """
-    The Tiago as MuJoCo's own model describes it, whose hand can hold something.
-    """
-
-    ros_node_name: str = "t_shirt_swing_demo"
-    """
-    Name of the node a run registers.
+    A robot handles a T-shirt that starts on a table in front of it, in physics, since
+    the T-shirt exists only there.
     """
 
     executor_type: type[PlanExecutor] = PhysicallySimulatedPlanExecutor
@@ -109,14 +97,6 @@ class TShirtSwingDemonstration(RobotDemonstration):
     table_scale: Scale = field(default_factory=lambda: Scale(0.9, 1.4, 0.72))
     """
     The depth, width and height of the table.
-    """
-
-    t_shirt_P_left_shoulder: Point3 = field(
-        default_factory=lambda: Point3(0.024, 0.176, 0.015)
-    )
-    """
-    The middle of the seam of the T-shirt's left shoulder, as
-    :attr:`GarmentFile.T_SHIRT` lays it out.
     """
 
     t_shirt_mass: float = 0.255
@@ -141,6 +121,200 @@ class TShirtSwingDemonstration(RobotDemonstration):
     The color of the T-shirt.
     """
 
+    approach_height: float = 0.1
+    """
+    How far above where they close the fingertips come down from, in metres.
+    """
+
+    fingertip_clearance: float = 0.005
+    """
+    How far above the table top the fingertips stay at the lowest, in metres.
+    """
+
+    closing_duration: float = 1.5
+    """
+    How long the gripper is given to close on the T-shirt before it holds it, in seconds
+    of simulated time: a motion counts as done once it is commanded, before the servos
+    got there.
+    """
+
+    noslip_iterations: int = 0
+    """
+    How many iterations of MuJoCo's no-slip solver follow every step, which keep what a
+    gripper holds by friction from creeping out of it.
+    """
+
+    friction_cone: mujoco.mjtCone = mujoco.mjtCone.mjCONE_PYRAMIDAL
+    """
+    The shape MuJoCo approximates the friction cone of a contact by.
+    """
+
+    frictional_to_normal_impedance_ratio: float = 1.0
+    """
+    How much harder MuJoCo resists a contact's sliding than its penetration, its
+    ``impratio``.
+    """
+
+    @property
+    @abstractmethod
+    def world_T_t_shirt(self) -> HomogeneousTransformationMatrix:
+        """
+        Where the T-shirt starts out, as :attr:`GarmentFile.T_SHIRT` lays it out with
+        its neckline at its origin and its hem along its x-axis.
+        """
+
+    def scene_specification(self) -> WorldSpecification:
+        return WorldSpecification(
+            objects=[
+                BodySpecification.box(
+                    SceneEntity.FLOOR,
+                    Scale(4.0, 4.0, 0.02),
+                    parent_T_self=HomogeneousTransformationMatrix.from_xyz_rpy(z=-0.01),
+                ),
+                BodySpecification.box(
+                    SceneEntity.TABLE,
+                    self.table_scale,
+                    parent_T_self=HomogeneousTransformationMatrix.from_xyz_rpy(
+                        x=self.table_distance + self.table_scale.x / 2,
+                        z=self.table_scale.z / 2,
+                    ),
+                ),
+            ]
+        )
+
+    def robot_specification(self) -> RobotSpecification:
+        return RobotSpecification(self.used_robot)
+
+    def is_scene_populated(self, world: World) -> bool:
+        return bool(world.get_semantic_annotations_by_type(TShirt))
+
+    def populate_scene(self, world: World) -> None:
+        """
+        Put the T-shirt where :attr:`world_T_t_shirt` places it.
+        """
+        t_shirt = TShirt.get_annotation_specification(
+            SceneEntity.T_SHIRT,
+            TShirt.get_default_root_kinematic_structure_entity_specification(),
+            annotation_kwargs={"fabric": self.t_shirt_fabric},
+        ).spawn(world, parent_T_self=self.world_T_t_shirt)
+        with world.modify_world():
+            t_shirt.add_cloth_sheet(
+                surface=self.t_shirt_garment.create_surface(self.world_T_t_shirt),
+                mass=self.t_shirt_mass,
+                color=self.t_shirt_color,
+            )
+
+    def build_context_extensions(self, world: World) -> list[ContextExtension]:
+        return [RobotAccess(world.get_semantic_annotations_by_type(self.used_robot)[0])]
+
+    def build_simulation(self, world: World) -> MujocoSim:
+        """
+        :meth:`RobotDemonstration.build_simulation`, integrated and solved the way cloth
+        simulates at an affordable cost, with this demonstration's friction settings.
+        """
+        return MujocoSim(
+            world=world,
+            headless=self.headless,
+            integrator=mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+            solver=mujoco.mjtSolver.mjSOL_CG,
+            noslip_iterations=self.noslip_iterations,
+            cone=self.friction_cone,
+            impratio=self.frictional_to_normal_impedance_ratio,
+        )
+
+    @staticmethod
+    def _gripper_pose_in(
+        world_T_frame: HomogeneousTransformationMatrix,
+        x: float,
+        y: float,
+        z: float,
+        gripper: HasTwoFingers,
+    ) -> Pose:
+        """
+        :param world_T_frame: The frame the gripper's position is given in.
+        :param x: Where the gripper is to be along the frame's x-axis, in metres.
+        :param y: Where the gripper is to be along the frame's y-axis, in metres.
+        :param z: How high above the frame the gripper is to be, in metres.
+        :param gripper: The gripper to place.
+        :return: The gripper there in the world, approaching straight down and closing
+            its fingers along the frame's x-axis.
+        """
+        approach = gripper.approach_axis.to_np()[:3]
+        closing = gripper.closing_axis.to_np()[:3]
+        tool_axes = numpy.column_stack(
+            [approach, closing, numpy.cross(approach, closing)]
+        )
+        down, forward = numpy.array([0.0, 0.0, -1.0]), numpy.array([1.0, 0.0, 0.0])
+        frame_axes = numpy.column_stack([down, forward, numpy.cross(down, forward)])
+        frame_T_tool = numpy.eye(4)
+        frame_T_tool[:3, :3] = frame_axes @ tool_axes.T
+        frame_T_tool[:3, 3] = [x, y, z]
+        return (world_T_frame @ HomogeneousTransformationMatrix(frame_T_tool)).pose
+
+    @staticmethod
+    def _move_gripper_to(target_pose: Pose, arm: Arm) -> MoveManipulatorAction:
+        """
+        :param target_pose: Where the gripper is to be.
+        :param arm: The arm moving the gripper.
+        :return: The action moving the gripper there, allowed to touch the T-shirt and
+            the table.
+        """
+        return MoveManipulatorAction(
+            target_pose=target_pose,
+            end_effector=arm.end_effector,
+            allow_gripper_collision=True,
+        )
+
+    @staticmethod
+    def _fingertip_reach(gripper: HasTwoFingers) -> float:
+        """
+        :param gripper: The gripper pointing down at the T-shirt.
+        :return: How far ahead of the gripper's tool frame its fingertips reach along
+            the direction it approaches in.
+        """
+        approach = gripper.approach_axis.to_np()[:3]
+        reach = -numpy.inf
+        for tip in gripper.fingertips.both:
+            box = tip.collision.as_bounding_box_collection_in_frame(
+                gripper.tool_frame
+            ).bounding_box()
+            for corner in itertools.product(
+                [box.min_x, box.max_x], [box.min_y, box.max_y], [box.min_z, box.max_z]
+            ):
+                reach = max(reach, float(numpy.dot(corner, approach)))
+        return reach
+
+
+# %% swinging it
+
+
+@dataclass
+class TShirtSwingDemonstration(TShirtOnTableDemonstration):
+    """
+    The Tiago takes the T-shirt lying spread out on the table in front of it by the
+    shoulder, turns away from the table to pull it off, and swings it from side to side.
+
+    The gripper holds the T-shirt by pinning the vertices between its fingertips to it.
+    """
+
+    used_robot: type[AbstractRobot] = TiagoMujoco
+    """
+    The Tiago as MuJoCo's own model describes it, whose hand can hold something.
+    """
+
+    ros_node_name: str = "t_shirt_swing_demo"
+    """
+    Name of the node a run registers.
+    """
+
+    t_shirt_P_left_shoulder: Point3 = field(
+        default_factory=lambda: Point3(0.024, 0.176, 0.015)
+    )
+    """
+    The middle of the seam of the T-shirt's left shoulder, as
+    :attr:`GarmentFile.T_SHIRT` lays it out.
+    """
+
     t_shirt_margin: float = 0.05
     """
     How far behind the near edge of the table the T-shirt's neckline lies, in metres.
@@ -149,23 +323,6 @@ class TShirtSwingDemonstration(RobotDemonstration):
     t_shirt_drop_height: float = 0.01
     """
     How far above the table top the T-shirt is laid out, to settle onto it, in metres.
-    """
-
-    approach_height: float = 0.1
-    """
-    How far above the shoulder the fingertips come down from, in metres.
-    """
-
-    fingertip_clearance: float = 0.005
-    """
-    How far above the table top the fingertips close on the shoulder, in metres.
-    """
-
-    closing_duration: float = 1.5
-    """
-    How long the gripper is given to close on the T-shirt before it holds it, in seconds
-    of simulated time: a motion counts as done once it is commanded, before the servos
-    got there.
     """
 
     pinning_radius: float = 0.03
@@ -207,72 +364,15 @@ class TShirtSwingDemonstration(RobotDemonstration):
     How long the T-shirt hangs after the last swing, in seconds of simulated time.
     """
 
-    def scene_specification(self) -> WorldSpecification:
-        return WorldSpecification(
-            objects=[
-                BodySpecification.box(
-                    SceneEntity.FLOOR,
-                    Scale(4.0, 4.0, 0.02),
-                    parent_T_self=HomogeneousTransformationMatrix.from_xyz_rpy(z=-0.01),
-                ),
-                BodySpecification.box(
-                    SceneEntity.TABLE,
-                    self.table_scale,
-                    parent_T_self=HomogeneousTransformationMatrix.from_xyz_rpy(
-                        x=self.table_distance + self.table_scale.x / 2,
-                        z=self.table_scale.z / 2,
-                    ),
-                ),
-            ]
-        )
-
-    def robot_specification(self) -> RobotSpecification:
-        return RobotSpecification(self.used_robot)
-
-    def is_scene_populated(self, world: World) -> bool:
-        return bool(world.get_semantic_annotations_by_type(TShirt))
-
-    def populate_scene(self, world: World) -> None:
-        """
-        Lay the T-shirt spread out on the table, its neckline towards the robot and its
-        sleeves to the sides.
-        """
-        t_shirt = TShirt.get_annotation_specification(
-            SceneEntity.T_SHIRT,
-            TShirt.get_default_root_kinematic_structure_entity_specification(),
-            annotation_kwargs={"fabric": self.t_shirt_fabric},
-        ).spawn(world, parent_T_self=self._world_T_t_shirt)
-        with world.modify_world():
-            t_shirt.add_cloth_sheet(
-                surface=self.t_shirt_garment.create_surface(self._world_T_t_shirt),
-                mass=self.t_shirt_mass,
-                color=self.t_shirt_color,
-            )
-
     @property
-    def _world_T_t_shirt(self) -> HomogeneousTransformationMatrix:
+    def world_T_t_shirt(self) -> HomogeneousTransformationMatrix:
         """
-        Where the T-shirt lies on the table: :attr:`GarmentFile.T_SHIRT` lays it out
-        with its neckline at its origin and its hem along its x-axis.
+        The T-shirt lies spread out on the table, its neckline towards the robot and its
+        sleeves to the sides.
         """
         return HomogeneousTransformationMatrix.from_xyz_rpy(
             x=self.table_distance + self.t_shirt_margin,
             z=self.table_scale.z + self.t_shirt_drop_height,
-        )
-
-    def build_context_extensions(self, world: World) -> list[ContextExtension]:
-        return [RobotAccess(world.get_semantic_annotations_by_type(self.used_robot)[0])]
-
-    def build_simulation(self, world: World) -> MujocoSim:
-        """
-        :meth:`RobotDemonstration.build_simulation`, integrated and solved the way cloth
-        simulates at an affordable cost.
-        """
-        return MujocoSim(
-            world=world,
-            headless=self.headless,
-            integrator=mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-            solver=mujoco.mjtSolver.mjSOL_CG,
         )
 
     def build_statechart(self, context: StatechartContext) -> Statechart:
@@ -300,6 +400,7 @@ class TShirtSwingDemonstration(RobotDemonstration):
             shoulder_x,
             shoulder_y,
             self.table_scale.z + self.approach_height + fingertip_reach,
+            gripper,
         )
         world_T_turned_base = (
             robot.root.global_pose.homogeneous_matrix
@@ -312,6 +413,7 @@ class TShirtSwingDemonstration(RobotDemonstration):
                 self.hanging_distance,
                 base_y_of_shoulder + side,
                 self.hanging_height,
+                gripper,
             )
             for side in [
                 *[self.swing_amplitude, -self.swing_amplitude] * self.swing_count,
@@ -335,6 +437,7 @@ class TShirtSwingDemonstration(RobotDemonstration):
                             self.table_scale.z
                             + self.fingertip_clearance
                             + fingertip_reach,
+                            gripper,
                         ),
                         arm,
                     ),
@@ -354,6 +457,7 @@ class TShirtSwingDemonstration(RobotDemonstration):
                             self.hanging_distance,
                             base_y_of_shoulder,
                             self.hanging_height,
+                            gripper,
                         ),
                         arm,
                     ),
@@ -373,7 +477,7 @@ class TShirtSwingDemonstration(RobotDemonstration):
         :return: Where the vertex of the T-shirt closest to the middle of its shoulder on
             the robot's left lies at the start.
         """
-        world_P_shoulder = self._world_T_t_shirt @ self.t_shirt_P_left_shoulder
+        world_P_shoulder = self.world_T_t_shirt @ self.t_shirt_P_left_shoulder
         [t_shirt] = world.get_semantic_annotations_by_type(TShirt)
         sheet = t_shirt.cloth_sheet
         _, [closest] = sheet.starting_surface.nearest.vertex(
@@ -381,53 +485,6 @@ class TShirtSwingDemonstration(RobotDemonstration):
         )
         return Pose.from_xyz_rpy(
             *sheet.starting_surface.vertices[closest], reference_frame=world.root
-        )
-
-    @staticmethod
-    def _gripper_pose_in(
-        world_T_frame: HomogeneousTransformationMatrix, x: float, y: float, z: float
-    ) -> Pose:
-        """
-        :param world_T_frame: The frame the gripper's position is given in.
-        :param x: Where the gripper is to be along the frame's x-axis, in metres.
-        :param y: Where the gripper is to be along the frame's y-axis, in metres.
-        :param z: How high above the frame the gripper is to be, in metres.
-        :return: The gripper there in the world, its tool frame's x-axis pointing down
-            and its y-axis, which its fingers close along, along the frame's x-axis.
-        """
-        return (
-            world_T_frame
-            @ HomogeneousTransformationMatrix.from_xyz_rpy(
-                x, y, z, roll=numpy.pi / 2, pitch=numpy.pi / 2
-            )
-        ).pose
-
-    @staticmethod
-    def _move_gripper_to(target_pose: Pose, arm: Arm) -> MoveManipulatorAction:
-        """
-        :param target_pose: Where the gripper is to be.
-        :param arm: The arm moving the gripper.
-        :return: The action moving the gripper there, allowed to touch the T-shirt and
-            the table.
-        """
-        return MoveManipulatorAction(
-            target_pose=target_pose,
-            end_effector=arm.end_effector,
-            allow_gripper_collision=True,
-        )
-
-    @staticmethod
-    def _fingertip_reach(gripper: HasTwoFingers) -> float:
-        """
-        :param gripper: The gripper pointing down at the T-shirt.
-        :return: How far ahead of the gripper's tool frame its fingertips reach along
-            the direction it approaches in, which is the tool frame's x-axis.
-        """
-        return max(
-            tip.collision.as_bounding_box_collection_in_frame(gripper.tool_frame)
-            .bounding_box()
-            .max_x
-            for tip in gripper.fingertips.both
         )
 
     def _pin_t_shirt_to(
