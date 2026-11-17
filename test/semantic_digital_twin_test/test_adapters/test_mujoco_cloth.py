@@ -388,6 +388,23 @@ def test_a_cloth_sheet_does_not_collide_with_itself(
     assert model.flex_selfcollide[flex_id] == mujoco.mjtFlexSelf.mjFLEXSELF_NONE
 
 
+def test_a_cloth_sheet_colliding_with_itself_keeps_its_parts_apart(
+    tmp_path: Path, triangle: Mesh
+) -> None:
+    """
+    The simulation keeps the parts of a cloth that collides with itself from passing
+    through each other.
+    """
+    cloth = ClothSheet(
+        name="cloth", surface=triangle, mass=0.15, collides_with_itself=True
+    )
+
+    model = build_model_of(cloth, tmp_path)
+
+    flex_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_FLEX, cloth.name)
+    assert model.flex_selfcollide[flex_id] == mujoco.mjtFlexSelf.mjFLEXSELF_AUTO
+
+
 # %% simulating
 
 

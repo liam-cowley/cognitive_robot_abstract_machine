@@ -3432,7 +3432,11 @@ class MujocoBuilder(MultiSimBuilder):
         flex.poisson = cloth.fabric.elasticity.poisson_ratio
         # the edge equality keeps the sheet from stretching, so elasticity resists bending
         flex.elastic2d = MujocoFlexElasticity.BENDING
-        flex.selfcollide = mujoco.mjtFlexSelf.mjFLEXSELF_NONE
+        flex.selfcollide = (
+            mujoco.mjtFlexSelf.mjFLEXSELF_AUTO
+            if cloth.collides_with_itself
+            else mujoco.mjtFlexSelf.mjFLEXSELF_NONE
+        )
         flex.rgba = list(cloth.color.to_rgba())
         flex.edgedamping = cloth.fabric.edge_damping
         edges = self.spec.add_equality()

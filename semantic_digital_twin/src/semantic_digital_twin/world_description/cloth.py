@@ -90,7 +90,7 @@ class Cotton(Fabric):
 class ClothSheet(SimulatorAdditionalProperty):
     """
     A piece of cloth a physical simulation deforms: a sheet of triangles whose edges keep
-    their length, which bends elastically and collides with everything but itself.
+    their length, which bends elastically and collides with what is around it.
     """
 
     name: str
@@ -122,6 +122,12 @@ class ClothSheet(SimulatorAdditionalProperty):
     color: Color = field(default_factory=Color)
     """
     The color the cloth is drawn in.
+    """
+
+    collides_with_itself: bool = False
+    """
+    Whether the parts of the cloth collide with each other instead of passing through
+    each other.
     """
 
     @cached_property
