@@ -197,7 +197,7 @@ class StaticObjectDetectorAnnotator(BaseAnnotator):
                 )
                 * 255
             )
-        StaticObjectDetectorAnnotator.add_classification_annotation(
+        self.add_classification_annotation(
             object_hypothesis=object_hypothesis,
             class_name=self.descriptor.parameters.class_name,
         )
@@ -294,7 +294,7 @@ class StaticObjectDetectorAnnotator(BaseAnnotator):
 
         if self.descriptor.parameters.create_pose_annotation:
             pose_annotation = PoseAnnotation()
-            pose_annotation.source = "StaticObjectDetectorAnnotator"
+            pose_annotation.source = self.get_class_name()
             pose_annotation.translation = object_translation_in_camera
             pose_annotation.rotation = object_rotation_in_camera
 
@@ -302,7 +302,7 @@ class StaticObjectDetectorAnnotator(BaseAnnotator):
 
         if self.descriptor.parameters.create_bounding_box_annotation:
             bounding_box_annotation = BoundingBox3DAnnotation()
-            bounding_box_annotation.source = "StaticObjectDetectorAnnotator"
+            bounding_box_annotation.source = self.get_class_name()
             bounding_box_annotation.pose = Pose()
             bounding_box_annotation.pose.translation = object_translation_in_camera
             bounding_box_annotation.pose.rotation = object_rotation_in_camera
@@ -313,7 +313,7 @@ class StaticObjectDetectorAnnotator(BaseAnnotator):
 
             object_hypothesis.annotations.append(bounding_box_annotation)
 
-        StaticObjectDetectorAnnotator.add_classification_annotation(
+        self.add_classification_annotation(
             object_hypothesis=object_hypothesis, class_name=self._body_name(body)
         )
 
@@ -490,9 +490,9 @@ class StaticObjectDetectorAnnotator(BaseAnnotator):
         self.feedback_message = f"Processing took {(end_timer - start_timer):.4f}s"
         return Status.SUCCESS
 
-    @staticmethod
+    @classmethod
     def add_classification_annotation(
-        object_hypothesis: ObjectHypothesis, class_name: str
+        cls, *, object_hypothesis: ObjectHypothesis, class_name: str
     ) -> None:
         """
         Add a classification annotation to the given object hypothesis.
@@ -502,7 +502,7 @@ class StaticObjectDetectorAnnotator(BaseAnnotator):
         """
         classification_annotation = Classification()
         classification_annotation.classname = class_name
-        classification_annotation.source = "StaticObjectDetectorAnnotator"
+        classification_annotation.source = cls.get_class_name()
         classification_annotation.confidence = 1.0
         object_hypothesis.annotations.append(classification_annotation)
 

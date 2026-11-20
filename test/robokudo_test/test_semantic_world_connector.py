@@ -1,3 +1,8 @@
+"""
+Tests for
+:class:`robokudo.annotators.semantic_world_connector.SemanticDigitalTwinConnector`.
+"""
+
 from __future__ import annotations
 
 # %% Imports
@@ -100,11 +105,14 @@ def _set_camera_to_world_transform(
 def _stamped_world_poses(
     hypothesis: ObjectHypothesis,
 ) -> list[StampedPoseAnnotation]:
+    """
+    :return: The stamped world poses the connector added to the hypothesis.
+    """
     return [
         annotation
         for annotation in hypothesis.annotations
         if isinstance(annotation, StampedPoseAnnotation)
-        and annotation.source == SemanticDigitalTwinConnector.__name__
+        and annotation.source == SemanticDigitalTwinConnector.get_class_name()
     ]
 
 
