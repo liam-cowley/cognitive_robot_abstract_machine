@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 import numpy as np
-from krrood.ormatic.utils import classproperty
+from krrood.patterns.classproperty import classproperty
 from typing_extensions import TYPE_CHECKING
 
 from robokudo.exceptions import CameraPoseMissing, InvalidCameraObservation

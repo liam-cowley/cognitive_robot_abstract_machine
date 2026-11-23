@@ -7,7 +7,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 import numpy.typing as npt
-from krrood.ormatic.utils import classproperty
+from krrood.patterns.classproperty import classproperty
 from py_trees.common import Status
 
 from robokudo.annotators.core import BaseAnnotator

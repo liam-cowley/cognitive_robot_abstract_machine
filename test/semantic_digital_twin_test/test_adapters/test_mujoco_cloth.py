@@ -100,7 +100,8 @@ def t_shirt_above_table() -> TShirtAboveTable:
         ),
         mass=0.255,
     )
-    world.add_simulator_property(t_shirt)
+    with world.modify_world():
+        world.add_simulator_property(t_shirt)
     return TShirtAboveTable(
         world=world, t_shirt=t_shirt, table_top_height=table_top_height
     )
@@ -135,7 +136,7 @@ def world_holding(cloth: ClothSheet) -> World:
     world = World()
     with world.modify_world():
         world.add_body(Body(name=PrefixedName("root")))
-    world.add_simulator_property(cloth)
+        world.add_simulator_property(cloth)
     return world
 
 
