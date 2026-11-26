@@ -55,6 +55,7 @@ from semantic_digital_twin.semantic_annotations.mixins import (
     IsGraspable,
     HasRim,
     HasDrawnGraspsByDefault,
+    HasSeatPlaces,
 )
 from semantic_digital_twin.grasping.grasp_candidates import GraspCandidate
 from semantic_digital_twin.grasping.grasp_strategies import (
@@ -91,6 +92,7 @@ from semantic_digital_twin.world_description.shape_collection import (
 from semantic_digital_twin.world_description.world_entity import (
     SemanticAnnotation,
     Body,
+    Region,
 )
 from semantic_digital_twin.world_description.world_modification import (
     synchronized_attribute_modification,
@@ -1293,7 +1295,7 @@ class Desk(Table, HasLegs):
 
 
 @dataclass(eq=False)
-class Chair(Furniture, HasRootBody):
+class Chair(Furniture, HasSeatPlaces):
     """
     Abstract class for chairs.
     """
@@ -1342,7 +1344,7 @@ class Bed(Furniture):
 
 
 @dataclass(eq=False)
-class Sofa(Furniture, HasSupportingSurface):
+class Sofa(Furniture, HasSupportingSurface, HasSeatPlaces):
     """
     A sofa.
     """
