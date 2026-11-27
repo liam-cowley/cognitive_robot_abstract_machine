@@ -47,6 +47,11 @@ class TableFromAboveScene(ABC):
     Brightness of the empty table.
     """
 
+    focal_length: float = 100.0
+    """
+    Focal length of the camera along both image axes, in pixels.
+    """
+
     world_frame: Body = field(default_factory=lambda: Body(name=PrefixedName("world")))
     """
     The frame the camera's pose is given in.
@@ -55,14 +60,14 @@ class TableFromAboveScene(ABC):
     @property
     def camera_model(self) -> PinholeCameraModel:
         """
-        A camera with a focal length of 100 pixels, centered on the image.
+        A camera with a focal length of :attr:`focal_length`, centered on the image.
         """
         return PinholeCameraModel(
             image_resolution=CameraResolution(
                 width=self.image_size, height=self.image_size
             ),
-            focal_length_x=100.0,
-            focal_length_y=100.0,
+            focal_length_x=self.focal_length,
+            focal_length_y=self.focal_length,
             principal_point=Point2(x=self.image_size / 2, y=self.image_size / 2),
         )
 

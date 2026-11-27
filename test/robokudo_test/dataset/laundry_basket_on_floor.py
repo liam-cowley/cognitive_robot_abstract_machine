@@ -69,6 +69,12 @@ class LaundryBasketScene(TableFromAboveScene):
     Brightness of the basket and the laundry in it.
     """
 
+    mask_spill: int = 4
+    """
+    How many pixels a spilling segmentation reaches past the basket's left side onto
+    the floor.
+    """
+
     def color_image(self) -> npt.NDArray[np.uint8]:
         """
         :return: The basket on the floor.
@@ -115,6 +121,25 @@ class LaundryBasketScene(TableFromAboveScene):
         )
         mask[self.rim_width : -self.rim_width, self.rim_width : -self.rim_width] = 0
         return mask
+
+    def spilled_basket_region(self) -> Rect:
+        """
+        :return: The pixels a segmentation spilling onto the floor left of the basket
+            covers.
+        """
+        left, top, right, bottom = self.basket_region.get_corner_points()
+        return Rect.from_corner_points(left - self.mask_spill, top, right, bottom)
+
+    def spilled_basket_mask(self) -> npt.NDArray[np.uint8]:
+        """
+        :return: The basket's mask within :meth:`spilled_basket_region`, also covering
+            the floor left of the basket.
+        """
+        return np.pad(
+            self.basket_mask(),
+            ((0, 0), (self.mask_spill, 0)),
+            constant_values=np.iinfo(np.uint8).max,
+        )
 
     def laundry_region(self) -> Rect:
         """

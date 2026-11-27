@@ -11,8 +11,12 @@ from py_trees.composites import Sequence
 
 from robokudo.analysis_engine import SubtreeInterface
 from robokudo.annotators.cluster_pose_bb import ClusterPoseBBAnnotator
+from robokudo.annotators.hypothesis_point_cloud import HypothesisPointCloudAnnotator
 from robokudo.annotators.open_vocabulary_object_detection_annotator import (
     OpenVocabularyObjectDetectionAnnotator,
+)
+from robokudo.annotators.outlier_removal_objecthypothesis import (
+    OutlierRemovalOnObjectHypothesisAnnotator,
 )
 from robokudo.annotators.query import GenerateQueryResult
 from robokudo.types.laundry import LaundryBasketClassName
@@ -23,8 +27,8 @@ from robokudo.types.laundry import LaundryBasketClassName
 @dataclass(kw_only=True)
 class Subtree(SubtreeInterface):
     """
-    In a single frame, detects the laundry baskets, estimates the pose of each from its
-    points and answers the query with them.
+    In a single frame, detects the laundry baskets, estimates the pose of each from the
+    largest cluster of the depth points its mask covers and answers the query with them.
     """
 
     def name(self) -> str:
@@ -35,8 +39,9 @@ class Subtree(SubtreeInterface):
 
     def implementation(self) -> Sequence:
         """
-        :return: The sequence that detects the baskets, estimates their poses and
-            answers the query.
+        :return: The sequence that detects the baskets, builds their point clouds,
+            removes the outliers from them, estimates their poses and answers the
+            query.
         """
         detection_descriptor = OpenVocabularyObjectDetectionAnnotator.Descriptor()
         detection_descriptor.parameters.classes = list(LaundryBasketClassName)
@@ -48,6 +53,8 @@ class Subtree(SubtreeInterface):
                 OpenVocabularyObjectDetectionAnnotator(
                     name="BasketDetection", descriptor=detection_descriptor
                 ),
+                HypothesisPointCloudAnnotator(),
+                OutlierRemovalOnObjectHypothesisAnnotator(),
                 ClusterPoseBBAnnotator(),
                 GenerateQueryResult(),
             ]
