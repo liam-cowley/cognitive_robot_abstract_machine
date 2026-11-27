@@ -6,6 +6,7 @@ routing each of its queries to the subtree that answers it.
 from __future__ import annotations
 
 # %% Imports
+import copy
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -18,6 +19,8 @@ from robokudo_msgs.action import Query
 
 from robokudo.annotators.cluster_pose_bb import ClusterPoseBBAnnotator
 from robokudo.annotators.collection_reader import CollectionReaderAnnotator
+from robokudo.annotators.core import BaseAnnotator
+from robokudo.annotators.hypothesis_point_cloud import HypothesisPointCloudAnnotator
 from robokudo.annotators.image_preprocessor import ImagePreprocessorAnnotator
 from robokudo.annotators.laundry_grasp_pose import LaundryGraspPoseAnnotator
 from robokudo.annotators.laundry_grasp_publisher import LaundryGraspPublisher
@@ -45,6 +48,9 @@ from semantic_digital_twin.robots.hsrb import HSRBGripper
 from semantic_digital_twin.world import World
 
 from .dataset.laundry_basket_on_floor import LaundryBasketScene
+
+from .test_cloth_unfolding import update_in_pipeline
+from .test_laundry_pickup import basket, cas, scene  # noqa: F401 - shared fixtures
 
 # %% Fixtures
 
@@ -271,6 +277,82 @@ def test_a_find_basket_pose_ignores_the_floor_a_segmentation_spills_onto(
     [pose] = CAS.filter_by_type(PoseAnnotation, basket.annotations)
     [spilled_pose] = CAS.filter_by_type(PoseAnnotation, spilled_basket.annotations)
     assert np.allclose(spilled_pose.translation, pose.translation)
+
+
+@pytest.fixture
+def basket_pose_annotators(scheduler: QueryBasedScheduler) -> list[BaseAnnotator]:
+    """
+    :return: The annotators of the find-basket subtree between its detector and its
+        answer, taken out of the subtree.
+    """
+    route = scheduler.filter_fn(Query.Goal(query=DoingLaundryQuery.FIND_BASKET))
+    subtree = scheduler.tasks[route]
+    annotators = [
+        behaviour
+        for behaviour in subtree.children
+        if not isinstance(
+            behaviour, (OpenVocabularyObjectDetectionAnnotator, GenerateQueryResult)
+        )
+    ]
+    for annotator in annotators:
+        subtree.remove_child(annotator)
+    return annotators
+
+
+def estimate_basket_pose(
+    annotators: list[BaseAnnotator], cas: CAS, smear_depth_behind_the_rim: bool = False
+) -> PoseAnnotation:
+    """
+    Run the annotators of the find-basket subtree on a CAS holding the detected basket,
+    as the engine runs them on a preprocessed frame.
+
+    :param smear_depth_behind_the_rim: Whether to add points behind the basket's rim to
+        its point cloud once it was built, as a depth camera measures them where the rim
+        meets the floor far behind it.
+    :return: The pose the annotators estimate for the basket.
+    """
+    update_in_pipeline(ImagePreprocessorAnnotator("ImagePreprocessor"), cas)
+    (basket,) = cas.filter_annotations_by_type(ObjectHypothesis)
+    for annotator in annotators:
+        update_in_pipeline(annotator, cas)
+        annotator.parent.remove_child(annotator)
+        if smear_depth_behind_the_rim and isinstance(
+            annotator, HypothesisPointCloudAnnotator
+        ):
+            points = np.asarray(basket.points.points)
+            rim = points[np.argsort(points[:, 2])[:50]]
+            behind_the_rim = rim + np.outer(np.linspace(0.1, 0.5, len(rim)), [0, 0, 1])
+            basket.points.points.extend(open3d.utility.Vector3dVector(behind_the_rim))
+    (pose,) = CAS.filter_by_type(PoseAnnotation, basket.annotations)
+    return pose
+
+
+@pytest.mark.usefixtures("annotator_output_buffer", "basket")
+def test_a_basket_the_find_basket_subtree_only_segmented_gets_a_pose(
+    basket_pose_annotators: list[BaseAnnotator], cas: CAS
+) -> None:
+    """
+    The detector only segments the basket, so the find-basket subtree has to find the
+    points of the basket itself before it can estimate the pose it answers with.
+    """
+    assert isinstance(estimate_basket_pose(basket_pose_annotators, cas), PoseAnnotation)
+
+
+@pytest.mark.usefixtures("annotator_output_buffer", "basket")
+def test_depth_smeared_behind_the_rim_does_not_move_the_basket(
+    basket_pose_annotators: list[BaseAnnotator], cas: CAS
+) -> None:
+    """
+    The points a depth camera measures between the basket's rim and the floor far behind
+    it do not stretch the basket away from the camera.
+    """
+    expected = estimate_basket_pose(basket_pose_annotators, copy.deepcopy(cas))
+
+    pose = estimate_basket_pose(
+        basket_pose_annotators, cas, smear_depth_behind_the_rim=True
+    )
+
+    assert pose.translation == pytest.approx(expected.translation, abs=0.01)
 
 
 def test_every_query_of_the_challenge_has_a_subtree(

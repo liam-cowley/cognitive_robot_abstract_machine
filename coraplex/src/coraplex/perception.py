@@ -1,26 +1,47 @@
+"""
+Perception for plans: what to look for, the sources that answer it, and the statechart
+nodes that write what they perceived into the world.
+"""
+
 from __future__ import annotations
 
+import logging
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import timedelta
+from enum import StrEnum
 
 import numpy as np
 
 from krrood.ormatic.utils import classproperty
-from cramph.node import EndedByOwner, FailsOnObservingFalse
+from cramph.node import (
+    EndedByOwner,
+    FailsOnObservingFalse,
+    SucceedsOnObservingTrue,
+)
 from cramph.context import ContextExtension
 from cramph.data_types import ObservationStateValues
 from cramph.node import StatechartNode
 from giskardpy.motion_statechart.ros_context import RosContextExtension
 from krrood.adapters.json_serializer import SubclassJSONSerializer, from_json, to_json
+from krrood.patterns.called_positionally import called_positionally
 from rclpy.action import ActionClient
+from rclpy.action.client import ClientGoalHandle
 from rclpy.node import Node
+from rclpy.qos import QoSProfile
+from rclpy.subscription import Subscription
+from rclpy.task import Future
+from rosidl_runtime_py.utilities import get_action
 from semantic_digital_twin.adapters.world_entity_kwargs_tracker import (
     WorldEntityWithIDKwargsTracker,
 )
 from semantic_digital_twin.reasoning.robot_predicates import VisibleTo
 from semantic_digital_twin.robots.robot_parts import AbstractRobot
 from semantic_digital_twin.semantic_annotations.mixins import IsPerceivable
+from semantic_digital_twin.semantic_annotations.semantic_annotations import (
+    LaundryBasket,
+)
 from krrood_spatial_math.spatial_types import (
     HomogeneousTransformationMatrix,
     RotationMatrix,
@@ -32,6 +53,7 @@ from semantic_digital_twin.world_description.world_entity import (
     SemanticAnnotation,
     Body,
 )
+from std_msgs.msg import Float64MultiArray
 from typing_extensions import Any, Self, TYPE_CHECKING
 
 from coraplex.datastructures.enums import PerceptionSource
@@ -44,6 +66,8 @@ from coraplex.exceptions import (
 
 if TYPE_CHECKING:
     from robokudo_msgs.msg import ObjectDesignator
+
+logger = logging.getLogger(__name__)
 
 ROBOKUDO_QUERY_ACTION_NAME = "robokudo/query"
 """
@@ -156,6 +180,37 @@ class Detection:
     """
     Where the perception source saw the object.
     """
+
+    @classmethod
+    def from_designator(
+        cls,
+        *,
+        designator: ObjectDesignator,
+        semantic_annotation: type[SemanticAnnotation],
+        world: World,
+    ) -> Self:
+        """
+        :param designator: An object RoboKudo reported, with at least one pose.
+        :param semantic_annotation: The annotation the object is identified as.
+        :param world: The world holding the frame the pose is stamped in.
+        :return: The object, seen at the first pose of `designator`.
+        """
+        pose_stamped = designator.pose[0]
+        return cls(
+            semantic_annotation=semantic_annotation,
+            pose=Pose.from_xyz_quaternion(
+                pose_stamped.pose.position.x,
+                pose_stamped.pose.position.y,
+                pose_stamped.pose.position.z,
+                pose_stamped.pose.orientation.x,
+                pose_stamped.pose.orientation.y,
+                pose_stamped.pose.orientation.z,
+                pose_stamped.pose.orientation.w,
+                reference_frame=world.get_kinematic_structure_entity_by_name(
+                    pose_stamped.header.frame_id
+                ),
+            ),
+        )
 
     def apply_to(
         self, world: World, trust_orientation: bool = True
@@ -365,8 +420,14 @@ class RoboKudoPerception(PerceptionInterface):
             obj=ObjectDesignator(type=query.semantic_annotation.__name__.lower())
         )
         result = client.send_goal(goal).result
+        # identified as the queried annotation: a classifying pipeline's objects were
+        # narrowed to it, and a localizing one answered where the queried object is
         return [
-            self._to_detection(designator, query)
+            Detection.from_designator(
+                designator=designator,
+                semantic_annotation=query.semantic_annotation,
+                world=query.world,
+            )
             for designator in result.res
             if designator.pose and self._can_be_requested_object(designator, query)
         ]
@@ -391,38 +452,6 @@ class RoboKudoPerception(PerceptionInterface):
         return (
             designator.type.strip().lower()
             == query.semantic_annotation.__name__.lower()
-        )
-
-    def _to_detection(
-        self, designator: ObjectDesignator, query: PerceptionQuery
-    ) -> Detection:
-        """
-        Convert one RoboKudo object designator into a detection.
-
-        The detection is identified as the queried annotation: a pipeline that classifies
-        has already been narrowed to it by :meth:`_can_be_requested_object`, and one that
-        only localizes answered where the queried object is.
-
-        :param designator: The designator RoboKudo reported.
-        :param query: The query it was answering, supplying the annotation and the frame.
-        :return: The detection carrying the queried annotation and the reported pose.
-        """
-        world = query.world
-        pose_stamped = designator.pose[0]
-        return Detection(
-            semantic_annotation=query.semantic_annotation,
-            pose=Pose.from_xyz_quaternion(
-                pose_stamped.pose.position.x,
-                pose_stamped.pose.position.y,
-                pose_stamped.pose.position.z,
-                pose_stamped.pose.orientation.x,
-                pose_stamped.pose.orientation.y,
-                pose_stamped.pose.orientation.z,
-                pose_stamped.pose.orientation.w,
-                reference_frame=world.get_kinematic_structure_entity_by_name(
-                    pose_stamped.header.frame_id
-                ),
-            ),
         )
 
 
@@ -514,3 +543,373 @@ class PerceptionTask(EndedByOwner, FailsOnObservingFalse, StatechartNode):
             self.query.world, trust_orientation=self.query.trust_detected_orientation
         )
         return ObservationStateValues.TRUE
+
+
+# %% RoboKudo's doing-laundry engine
+
+
+class DoingLaundryInterface(StrEnum):
+    """
+    The names RoboKudo's doing-laundry engine is reached by, which have to match the ones
+    the engine declares.
+    """
+
+    QUERY_ACTION_TYPE = "robokudo_msgs/action/Query"
+    """
+    The action RoboKudo answers its queries over.
+    """
+
+    T_SHIRT_PILE_QUERY = "tshirt-pile"
+    """
+    The query after which the engine streams a grasp on the laundry in a basket until the
+    query is canceled.
+    """
+
+    FIND_BASKET_QUERY = "find-basket"
+    """
+    The query the engine answers once with the pose of each laundry basket in view.
+    """
+
+    GRASP_TOPIC = "/basket_tshirt_grasp_pose"
+    """
+    The topic the engine streams the grasp on, as a homogeneous transformation matrix in
+    the map frame, row by row.
+    """
+
+
+@dataclass(kw_only=True)
+class DoingLaundryQuery:
+    """
+    A query to RoboKudo's doing-laundry engine, sent over the engine's query action and
+    followed until the engine ended it.
+    """
+
+    query: DoingLaundryInterface
+    """
+    The query sent.
+    """
+
+    action_client: ActionClient
+    """
+    The client the query is sent with.
+    """
+
+    goal_handle: ClientGoalHandle | None = field(init=False, default=None)
+    """
+    The query's goal, None until the engine responded to it.
+    """
+
+    result: Future | None = field(init=False, default=None)
+    """
+    The result the query ends with, None until the engine accepted it.
+    """
+
+    @classmethod
+    def connect(
+        cls,
+        *,
+        query: DoingLaundryInterface,
+        ros_context: RosContextExtension,
+        server_timeout: timedelta,
+    ) -> Self:
+        """
+        :param query: The query to send.
+        :param ros_context: The ROS access the query goes through.
+        :param server_timeout: How long to wait for the engine's query action.
+        :return: The query, ready to be sent.
+        :raises PerceptionSourceUnavailable: If the engine's query action is not served
+            within `server_timeout`.
+        """
+        action_client = ros_context.get_or_create_action_client(
+            get_action(DoingLaundryInterface.QUERY_ACTION_TYPE),
+            ROBOKUDO_QUERY_ACTION_NAME,
+        )
+        if not action_client.wait_for_server(
+            timeout_sec=server_timeout.total_seconds()
+        ):
+            raise PerceptionSourceUnavailable(action_name=ROBOKUDO_QUERY_ACTION_NAME)
+        return cls(query=query, action_client=action_client)
+
+    @property
+    def was_rejected(self) -> bool:
+        """
+        Whether the engine responded to the query by rejecting it.
+        """
+        return self.goal_handle is not None and not self.goal_handle.accepted
+
+    @property
+    def has_ended(self) -> bool:
+        """
+        Whether the engine accepted the query and has ended it since.
+        """
+        return self.result is not None and self.result.done()
+
+    def send(self) -> None:
+        """
+        Send the query, forgetting how an earlier one went.
+        """
+        self.goal_handle = None
+        self.result = None
+        self.action_client.send_goal_async(
+            get_action(DoingLaundryInterface.QUERY_ACTION_TYPE).Goal(query=self.query)
+        ).add_done_callback(self._keep_goal_handle)
+
+    def cancel(self) -> None:
+        """
+        Cancel the query, if the engine accepted it.
+        """
+        if self.goal_handle is not None and self.goal_handle.accepted:
+            self.goal_handle.cancel_goal_async()
+
+    @called_positionally
+    def _keep_goal_handle(self, goal_response: Future) -> None:
+        """
+        :param goal_response: The engine's response to the query.
+        """
+        goal_handle = goal_response.result()
+        if goal_handle.accepted:
+            self.result = goal_handle.get_result_async()
+        self.goal_handle = goal_handle
+
+
+# %% finding the laundry basket
+
+
+@dataclass(eq=False, repr=False, kw_only=True)
+class LaundryBasketPerception(
+    SucceedsOnObservingTrue, FailsOnObservingFalse, StatechartNode
+):
+    """
+    Statechart node that asks RoboKudo's doing-laundry engine for the laundry baskets in
+    view and moves a basket to the one seen nearest to it. The basket keeps its
+    orientation, which the engine estimates only up to half a turn.
+    """
+
+    basket: LaundryBasket
+    """
+    The basket to move to where it was seen, attached by a connection that takes a pose.
+    """
+
+    server_timeout: timedelta = field(default=timedelta(seconds=10))
+    """
+    How long to wait for RoboKudo's query action before giving up.
+    """
+
+    _query: DoingLaundryQuery | None = field(init=False, default=None, repr=False)
+    """
+    The find-basket query, connected during :meth:`set_up`.
+    """
+
+    @classproperty
+    def required_context_extensions(cls) -> tuple[type[ContextExtension], ...]:
+        """
+        :attr:`StatechartNode.required_context_extensions` and the ROS access the query
+        goes through.
+        """
+        return super().required_context_extensions + (RosContextExtension,)
+
+    def set_up(self) -> None:
+        """
+        :meth:`StatechartNode.set_up`, connected to RoboKudo's query action.
+
+        :raises PerceptionSourceUnavailable: If RoboKudo's query action is not served
+            within :attr:`server_timeout`.
+        """
+        super().set_up()
+        self._query = DoingLaundryQuery.connect(
+            query=DoingLaundryInterface.FIND_BASKET_QUERY,
+            ros_context=self.context.require_extension(
+                extension_type=RosContextExtension
+            ),
+            server_timeout=self.server_timeout,
+        )
+
+    def on_start(self) -> None:
+        """
+        :meth:`StatechartNode.on_start`, sending the query.
+        """
+        self._query.send()
+
+    def on_tick(self) -> ObservationStateValues | None:
+        """
+        :meth:`StatechartNode.on_tick`, observing true once the basket was moved to
+        where it was seen and false once the query ended without a basket in view.
+
+        :raises AmbiguousDetection: If the world holds another laundry basket.
+        """
+        if self._query.was_rejected:
+            logger.warning("RoboKudo rejected the find-basket query.")
+            return ObservationStateValues.FALSE
+        if not self._query.has_ended:
+            return None
+        world = self.context.world
+        designators = self._query.result.result().result.res
+        detections = [
+            Detection.from_designator(
+                designator=designator, semantic_annotation=LaundryBasket, world=world
+            )
+            for designator in designators
+            if designator.pose
+        ]
+        if not detections:
+            logger.warning(
+                f"RoboKudo reported {len(designators)} object(s) for the find-basket "
+                f"query, none of them with a pose."
+            )
+            return ObservationStateValues.FALSE
+        basket_position = self.basket.root.global_pose.position
+        distances = [
+            float(
+                world.transform(detection.pose, world.root).position.euclidean_distance(
+                    basket_position
+                )
+            )
+            for detection in detections
+        ]
+        for detection, distance in zip(detections, distances):
+            world_P_detection = world.transform(detection.pose, world.root)
+            logger.info(
+                f"RoboKudo sees a basket in {detection.pose.reference_frame.name} at "
+                f"x={float(world_P_detection.x):.2f} y={float(world_P_detection.y):.2f} "
+                f"z={float(world_P_detection.z):.2f} in {world.root.name}, "
+                f"{distance:.2f} m from where it was assumed."
+            )
+        nearest = detections[distances.index(min(distances))]
+        nearest.apply_to(world, trust_orientation=False)
+        basket_pose = self.basket.root.global_pose
+        logger.info(
+            f"Moved the basket to the nearest of the {len(detections)} seen: "
+            f"x={float(basket_pose.x):.2f} y={float(basket_pose.y):.2f} "
+            f"yaw={math.degrees(float(basket_pose.yaw)):.0f} deg in {world.root.name}."
+        )
+        return ObservationStateValues.TRUE
+
+
+# %% the grasp on the laundry in a basket
+
+
+@dataclass(eq=False, repr=False, kw_only=True)
+class LaundryGraspPerception(
+    SucceedsOnObservingTrue, FailsOnObservingFalse, StatechartNode
+):
+    """
+    Statechart node that asks RoboKudo's doing-laundry engine where to take hold of the
+    laundry in a basket and records the first grasp the engine streams on the basket,
+    read in the world's root frame. Ending the node cancels the query.
+    """
+
+    basket: LaundryBasket
+    """
+    The basket whose laundry to take hold of.
+    """
+
+    server_timeout: timedelta = field(default=timedelta(seconds=10))
+    """
+    How long to wait for RoboKudo's query action before giving up.
+    """
+
+    _query: DoingLaundryQuery | None = field(init=False, default=None, repr=False)
+    """
+    The T-shirt pile query, connected during :meth:`set_up`.
+    """
+
+    _subscription: Subscription = field(init=False, repr=False)
+    """
+    The subscription to the streamed grasps, created during :meth:`set_up`.
+    """
+
+    _streamed_grasp: Float64MultiArray | None = field(
+        init=False, default=None, repr=False
+    )
+    """
+    The latest grasp the engine streamed since the query was sent, None before the first.
+    """
+
+    @classproperty
+    def required_context_extensions(cls) -> tuple[type[ContextExtension], ...]:
+        """
+        :attr:`StatechartNode.required_context_extensions` and the ROS access the query
+        goes through.
+        """
+        return super().required_context_extensions + (RosContextExtension,)
+
+    def set_up(self) -> None:
+        """
+        :meth:`StatechartNode.set_up`, connected to RoboKudo's query action and to the
+        grasp topic.
+
+        :raises PerceptionSourceUnavailable: If RoboKudo's query action is not served
+            within :attr:`server_timeout`.
+        """
+        super().set_up()
+        ros_context = self.context.require_extension(extension_type=RosContextExtension)
+        self._query = DoingLaundryQuery.connect(
+            query=DoingLaundryInterface.T_SHIRT_PILE_QUERY,
+            ros_context=ros_context,
+            server_timeout=self.server_timeout,
+        )
+        self._subscription = ros_context.ros_node.create_subscription(
+            Float64MultiArray,
+            DoingLaundryInterface.GRASP_TOPIC,
+            self._keep_streamed_grasp,
+            QoSProfile(depth=1),
+        )
+
+    def on_start(self) -> None:
+        """
+        :meth:`StatechartNode.on_start`, sending the query and forgetting any grasp
+        streamed before it.
+        """
+        self._streamed_grasp = None
+        self._query.send()
+
+    def on_tick(self) -> ObservationStateValues | None:
+        """
+        :meth:`StatechartNode.on_tick`, observing true once a grasp was recorded and false
+        once the query ended without one.
+        """
+        if self._streamed_grasp is not None:
+            self._record_streamed_grasp()
+            return ObservationStateValues.TRUE
+        if self._query.was_rejected or self._query.has_ended:
+            logger.warning(
+                "RoboKudo ended the T-shirt pile query without streaming a grasp."
+            )
+            return ObservationStateValues.FALSE
+        return None
+
+    def on_end(self) -> None:
+        """
+        :meth:`StatechartNode.on_end`, canceling the query, which the engine otherwise
+        streams until a newer query arrives.
+        """
+        self._query.cancel()
+
+    def _record_streamed_grasp(self) -> None:
+        """
+        Record the latest streamed grasp on the basket.
+        """
+        data = self._streamed_grasp.data
+        columns = self._streamed_grasp.layout.dim[-1].size
+        world = self.context.world
+        world_T_grasp = HomogeneousTransformationMatrix(
+            data=[
+                list(data[start : start + columns])
+                for start in range(0, len(data), columns)
+            ],
+            reference_frame=world.root,
+        )
+        logger.info(
+            f"RoboKudo streamed a grasp on the laundry at "
+            f"x={float(world_T_grasp.x):.2f} y={float(world_T_grasp.y):.2f} "
+            f"z={float(world_T_grasp.z):.2f} in {world.root.name}."
+        )
+        with world.modify_world():
+            self.basket.update_laundry_grasp_pose(world_T_grasp.pose)
+
+    @called_positionally
+    def _keep_streamed_grasp(self, grasp: Float64MultiArray) -> None:
+        """
+        :param grasp: The grasp the engine streamed.
+        """
+        self._streamed_grasp = grasp

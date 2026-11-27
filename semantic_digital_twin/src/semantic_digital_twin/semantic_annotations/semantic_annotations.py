@@ -5,7 +5,10 @@ from dataclasses import dataclass, field
 from typing_extensions import Iterable, Iterator, Self, TYPE_CHECKING
 
 
+import math
+
 import numpy as np
+import trimesh
 
 from krrood.ormatic.utils import classproperty
 from krrood.symbolic_math import symbolic_math
@@ -21,6 +24,8 @@ from semantic_digital_twin.exceptions import (
     InvalidHingeActiveAxis,
     MissingSemanticAnnotationError,
     MissingMovableJointError,
+    LaundryGraspNotPerceived,
+    NoClothInWorld,
 )
 from semantic_digital_twin.reasoning.predicates import InsideOf
 from semantic_digital_twin.semantic_annotations.part_whole import (
@@ -1999,10 +2004,14 @@ class TShirt(IsNonRigid, IsPerceivable):
 
 
 @dataclass(eq=False)
-class LaundryBasket(Container, IsPerceivable):
+class LaundryBasket(Container, HasCaseAsRootBody, IsPerceivable):
     """
-    A basket that laundry is kept and carried in.
+    A basket that laundry is kept and carried in, open at the top.
     """
+
+    @classproperty
+    def _hole_direction_axis(cls) -> Vector3:
+        return Vector3.Z()
 
     laundry_grasp_pose: Pose | None = field(default=None, hash=False, kw_only=True)
     """
@@ -2019,3 +2028,50 @@ class LaundryBasket(Container, IsPerceivable):
         :param laundry_grasp_pose: The grasp, or ``None`` if perception found no laundry.
         """
         self.laundry_grasp_pose = laundry_grasp_pose
+
+    def grasp_on_laundry(
+        self, *, pinch_depth: float, turned_about_approach: bool = False
+    ) -> GraspCandidate:
+        """
+        :param pinch_depth: How far past the top of the laundry the fingers close, along
+            the approach, in metres.
+        :param turned_about_approach: Whether the grasp is turned half a turn about its
+            approach, closing along the same line from the other side, which a gripper
+            with two equal fingers takes alike.
+        :return: The grasp at :attr:`laundry_grasp_pose`, moved ``pinch_depth`` along its
+            approach, on the cloth whose surface lies nearest to it, a cloth without
+            collision geometry counting by its origin.
+        :raises LaundryGraspNotPerceived: If perception has not found where to take hold
+            of the laundry.
+        :raises NoClothInWorld: If the world holds no cloth to take hold of.
+        """
+        if self.laundry_grasp_pose is None:
+            raise LaundryGraspNotPerceived(basket_name=self.name)
+        world = self._world
+        cloths = world.get_semantic_annotations_by_type(Cloth)
+        if not cloths:
+            raise NoClothInWorld()
+        world_T_grasp = world.transform(self.laundry_grasp_pose, world.root)
+
+        def distance_to_cloth(cloth: Cloth) -> float:
+            """
+            :param cloth: The cloth to measure to.
+            :return: How far the grasp lies from the surface of the cloth, or from its
+                origin if it has no collision geometry, in metres.
+            """
+            cloth_P_grasp = world.transform(world_T_grasp.position, cloth.root)
+            surface = cloth.root.combined_mesh
+            if surface is None:
+                return float(cloth_P_grasp.norm())
+            x, y, z, _ = cloth_P_grasp.to_list()
+            _, distances, _ = trimesh.proximity.closest_point(surface, [[x, y, z]])
+            return float(distances[0])
+
+        cloth = min(cloths, key=distance_to_cloth)
+        world_T_pinch = (
+            world_T_grasp.homogeneous_matrix
+            @ HomogeneousTransformationMatrix.from_xyz_rpy(
+                x=pinch_depth, roll=math.pi if turned_about_approach else 0.0
+            )
+        )
+        return GraspCandidate(cloth, world.transform(world_T_pinch.pose, cloth.root))
